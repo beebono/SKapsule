@@ -52,6 +52,51 @@ static struct {
     char app_files[1024];
 } jvm = { .started = ATOMIC_VAR_INIT(false) };
 
+// --- input event ring buffer --------------------------------------------------
+// Filled on the Android UI thread (NativeBridge JNI calls), drained on SK's
+// main loop thread (GLFW.glfwPollEvents -> nativeDrainInput). Each event is a
+// 4-int record [type, a, b, c]; the type codes mirror GLFW.java.
+#define EV_CURSOR_POS   1
+#define EV_MOUSE_BUTTON 2
+#define EV_SCROLL       3
+#define EV_KEY          4
+#define EV_CHAR         5
+
+#define INPUT_Q_CAP 2048   // power-of-two-ish; must exceed a frame's worth of events
+static struct {
+    pthread_mutex_t lock;
+    int32_t buf[INPUT_Q_CAP][4];
+    int head;   // next read
+    int tail;   // next write
+} input_q = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+static void input_push(int32_t type, int32_t a, int32_t b, int32_t c) {
+    pthread_mutex_lock(&input_q.lock);
+    int next = (input_q.tail + 1) % INPUT_Q_CAP;
+    if (next != input_q.head) {           // drop silently if full
+        input_q.buf[input_q.tail][0] = type;
+        input_q.buf[input_q.tail][1] = a;
+        input_q.buf[input_q.tail][2] = b;
+        input_q.buf[input_q.tail][3] = c;
+        input_q.tail = next;
+    }
+    pthread_mutex_unlock(&input_q.lock);
+}
+
+// --- gamepad state (polled, not queued) ---------------------------------------
+// SK reads this each frame via GLFW.glfwGetGamepadState. Android writes button/
+// axis changes from its UI thread. Values are already normalized to the GLFW
+// standard gamepad layout on the Android side (15 buttons, 6 axes; trigger axes
+// rest=-1..pressed=+1), so this is a dumb mailbox.
+#define GP_BUTTONS 15
+#define GP_AXES    6
+static struct {
+    pthread_mutex_t lock;
+    atomic_bool present;
+    int8_t buttons[GP_BUTTONS];
+    float  axes[GP_AXES];
+} gamepad = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
 // --- EGL helpers --------------------------------------------------------------
 
 static const char *egl_err_str(EGLint e) {
@@ -550,13 +595,63 @@ static void JNICALL glfw_swap_buffers_impl(JNIEnv *env, jclass thiz, jlong windo
     }
 }
 
+// Drain up to (out.length/4) event records into the caller's int[]. Returns the
+// number of records written. Called from GLFW.glfwPollEvents on SK's main thread.
+static jint JNICALL glfw_drain_input_impl(JNIEnv *env, jclass thiz, jintArray out) {
+    if (!out) return 0;
+    jsize cap = (*env)->GetArrayLength(env, out) / 4;
+    if (cap <= 0) return 0;
+
+    jint *elems = (*env)->GetIntArrayElements(env, out, NULL);
+    if (!elems) return 0;
+
+    int n = 0;
+    pthread_mutex_lock(&input_q.lock);
+    while (n < cap && input_q.head != input_q.tail) {
+        int32_t *rec = input_q.buf[input_q.head];
+        elems[n * 4 + 0] = rec[0];
+        elems[n * 4 + 1] = rec[1];
+        elems[n * 4 + 2] = rec[2];
+        elems[n * 4 + 3] = rec[3];
+        input_q.head = (input_q.head + 1) % INPUT_Q_CAP;
+        n++;
+    }
+    pthread_mutex_unlock(&input_q.lock);
+
+    (*env)->ReleaseIntArrayElements(env, out, elems, 0);
+    return n;
+}
+
+static jboolean JNICALL glfw_gamepad_present_impl(JNIEnv *env, jclass thiz) {
+    return atomic_load(&gamepad.present) ? JNI_TRUE : JNI_FALSE;
+}
+
+// Copy current gamepad state into the caller's byte[15] / float[6]. Returns
+// false (and touches nothing) if no gamepad is connected.
+static jboolean JNICALL glfw_get_gamepad_state_impl(JNIEnv *env, jclass thiz,
+                                                    jbyteArray outButtons, jfloatArray outAxes) {
+    if (!atomic_load(&gamepad.present) || !outButtons || !outAxes) return JNI_FALSE;
+    int8_t btns[GP_BUTTONS];
+    float  axes[GP_AXES];
+    pthread_mutex_lock(&gamepad.lock);
+    memcpy(btns, gamepad.buttons, sizeof btns);
+    memcpy(axes, gamepad.axes,    sizeof axes);
+    pthread_mutex_unlock(&gamepad.lock);
+    (*env)->SetByteArrayRegion(env, outButtons, 0, GP_BUTTONS, (const jbyte *)btns);
+    (*env)->SetFloatArrayRegion(env, outAxes,   0, GP_AXES,    axes);
+    return JNI_TRUE;
+}
+
 JNIEXPORT void JNICALL
 Java_com_skarm_launcher_bootstrap_SkBootstrap_registerGlfwNatives(JNIEnv *env, jclass thiz,
                                                                   jclass glfwClass) {
     JNINativeMethod m[] = {
-        { "nativeMakeContextCurrent", "(J)V",  (void *)glfw_make_current_impl },
-        { "nativeSwapBuffers",        "(J)V",  (void *)glfw_swap_buffers_impl },
-        { "nativeGetSurfaceSize",     "()[I",  (void *)glfw_get_surface_size_impl },
+        { "nativeMakeContextCurrent", "(J)V",   (void *)glfw_make_current_impl },
+        { "nativeSwapBuffers",        "(J)V",   (void *)glfw_swap_buffers_impl },
+        { "nativeGetSurfaceSize",     "()[I",   (void *)glfw_get_surface_size_impl },
+        { "nativeDrainInput",         "([I)I",  (void *)glfw_drain_input_impl },
+        { "nativeGamepadPresent",     "()Z",    (void *)glfw_gamepad_present_impl },
+        { "nativeGetGamepadState",    "([B[F)Z",(void *)glfw_get_gamepad_state_impl },
     };
     jint rc = (*env)->RegisterNatives(env, glfwClass, m, sizeof(m) / sizeof(m[0]));
     if (rc != 0) {
@@ -619,4 +714,68 @@ JNIEXPORT void JNICALL
 Java_com_skarm_launcher_NativeBridge_launchGame(JNIEnv *env, jobject thiz,
                                                 jstring gameDir, jstring loginMode) {
     LOGI("launchGame (stub)");
+}
+
+// Touch -> mouse. action: 0=down, 1=move, 2=up. x,y in framebuffer pixels
+// (y-down, top-left origin), matching the EGL surface that SK renders into.
+// We always emit a cursor move so the button callback (which reads
+// glfwGetCursorPos) lands at the touch point, then the button on down/up.
+#define TOUCH_DOWN 0
+#define TOUCH_MOVE 1
+#define TOUCH_UP   2
+#define GLFW_MOUSE_BUTTON_LEFT 0
+JNIEXPORT void JNICALL
+Java_com_skarm_launcher_NativeBridge_onTouchEvent(JNIEnv *env, jobject thiz,
+                                                  jint action, jint x, jint y) {
+    input_push(EV_CURSOR_POS, x, y, 0);
+    if (action == TOUCH_DOWN) {
+        input_push(EV_MOUSE_BUTTON, GLFW_MOUSE_BUTTON_LEFT, 1 /*press*/, 0);
+    } else if (action == TOUCH_UP) {
+        input_push(EV_MOUSE_BUTTON, GLFW_MOUSE_BUTTON_LEFT, 0 /*release*/, 0);
+    }
+}
+
+// --- gamepad: Android UI thread writes, SK main thread reads ------------------
+JNIEXPORT void JNICALL
+Java_com_skarm_launcher_NativeBridge_onGamepadConnected(JNIEnv *env, jobject thiz,
+                                                        jboolean connected) {
+    if (!connected) {
+        // Zero state so a held button/axis doesn't stick after disconnect.
+        pthread_mutex_lock(&gamepad.lock);
+        memset(gamepad.buttons, 0, sizeof gamepad.buttons);
+        memset(gamepad.axes,    0, sizeof gamepad.axes);
+        pthread_mutex_unlock(&gamepad.lock);
+    }
+    atomic_store(&gamepad.present, connected ? true : false);
+    LOGI("gamepad %s", connected ? "connected" : "disconnected");
+}
+
+JNIEXPORT void JNICALL
+Java_com_skarm_launcher_NativeBridge_onGamepadButton(JNIEnv *env, jobject thiz,
+                                                     jint index, jboolean pressed) {
+    if (index < 0 || index >= GP_BUTTONS) return;
+    pthread_mutex_lock(&gamepad.lock);
+    gamepad.buttons[index] = pressed ? 1 : 0;
+    pthread_mutex_unlock(&gamepad.lock);
+}
+
+JNIEXPORT void JNICALL
+Java_com_skarm_launcher_NativeBridge_onGamepadAxis(JNIEnv *env, jobject thiz,
+                                                   jint index, jfloat value) {
+    if (index < 0 || index >= GP_AXES) return;
+    pthread_mutex_lock(&gamepad.lock);
+    gamepad.axes[index] = value;
+    pthread_mutex_unlock(&gamepad.lock);
+}
+
+// --- keyboard: GLFW key transitions + typed characters -----------------------
+JNIEXPORT void JNICALL
+Java_com_skarm_launcher_NativeBridge_onKeyEvent(JNIEnv *env, jobject thiz,
+                                                jint key, jint action, jint mods) {
+    input_push(EV_KEY, key, action, mods);
+}
+
+JNIEXPORT void JNICALL
+Java_com_skarm_launcher_NativeBridge_onCharInput(JNIEnv *env, jobject thiz, jint codepoint) {
+    input_push(EV_CHAR, codepoint, 0, 0);
 }

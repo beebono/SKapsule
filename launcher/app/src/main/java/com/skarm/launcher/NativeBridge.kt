@@ -26,4 +26,26 @@ object NativeBridge {
 
     /** Launches Spiral Knights inside the running JVM. (Stub) */
     external fun launchGame(gameDir: String, loginMode: String)
+
+    /**
+     * Forwards a touch as a mouse event into the native input queue.
+     * @param action 0=down, 1=move, 2=up
+     * @param x,y framebuffer pixels (y-down, top-left origin)
+     */
+    external fun onTouchEvent(action: Int, x: Int, y: Int)
+
+    /** Marks a controller connected/disconnected. Disconnect zeroes held state. */
+    external fun onGamepadConnected(connected: Boolean)
+
+    /** Sets a button in the GLFW standard layout (index 0..14). */
+    external fun onGamepadButton(index: Int, pressed: Boolean)
+
+    /** Sets an axis in the GLFW standard layout (index 0..5), value already normalized. */
+    external fun onGamepadAxis(index: Int, value: Float)
+
+    /** A key transition. key = GLFW keycode; action 1=press, 2=repeat, 0=release. */
+    external fun onKeyEvent(key: Int, action: Int, mods: Int)
+
+    /** A typed character (Unicode codepoint) for text entry. */
+    external fun onCharInput(codepoint: Int)
 }

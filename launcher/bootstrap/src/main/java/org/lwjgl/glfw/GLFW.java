@@ -30,6 +30,10 @@ public final class GLFW {
     public static final int GLFW_X11_XCB_VULKAN_SURFACE = 0x52001;
     public static final int GLFW_PLATFORM = 0x50003;
 
+    // --- joystick / gamepad constants (referenced by our own methods) ---
+    public static final int GLFW_JOYSTICK_1 = 0;
+    public static final int GLFW_JOYSTICK_LAST = 15;
+
     // --- minimum viable surface ---
     public static boolean glfwInit() {
         return true;
@@ -39,7 +43,58 @@ public final class GLFW {
 
     public static void glfwInitHint(int hint, int value) { /* no-op */ }
 
-    public static void glfwPollEvents() { /* no-op until we wire input */ }
+    // --- input event pump ---------------------------------------------------
+    // Android input crosses the classloader boundary as primitive ints through
+    // a native ring buffer (filled on the Android UI thread, drained here on
+    // SK's main loop thread). Each event is a 4-int record: [type, a, b, c].
+    // Draining here means the stored SK callbacks fire on the same thread that
+    // calls glfwPollEvents — matching desktop GLFW semantics exactly.
+    private static final int EV_CURSOR_POS   = 1; // a=x, b=y (framebuffer px, y-down)
+    private static final int EV_MOUSE_BUTTON = 2; // a=button, b=action (1=press,0=release)
+    private static final int EV_SCROLL       = 3; // a=delta (+/-1)
+    private static final int EV_KEY          = 4; // a=key, b=action, c=mods
+    private static final int EV_CHAR         = 5; // a=codepoint
+
+    private static final int DRAIN_RECORDS = 256;
+    private static final int[] drainBuf = new int[DRAIN_RECORDS * 4];
+    private static native int nativeDrainInput(int[] out);
+
+    public static void glfwPollEvents() {
+        int n;
+        do {
+            n = nativeDrainInput(drainBuf);
+            for (int i = 0; i < n; i++) {
+                int base = i * 4;
+                int type = drainBuf[base];
+                int a = drainBuf[base + 1];
+                int b = drainBuf[base + 2];
+                int c = drainBuf[base + 3];
+                switch (type) {
+                    case EV_CURSOR_POS:
+                        cursorX = a;
+                        cursorY = b;
+                        if (cursorPosCb != null) cursorPosCb.invoke(FAKE_WINDOW, cursorX, cursorY);
+                        break;
+                    case EV_MOUSE_BUTTON:
+                        mouseButtons[a & 0x7] = (b != 0);
+                        if (mouseButtonCb != null) mouseButtonCb.invoke(FAKE_WINDOW, a, b, 0);
+                        break;
+                    case EV_SCROLL:
+                        if (scrollCb != null) scrollCb.invoke(FAKE_WINDOW, 0.0, a);
+                        break;
+                    case EV_KEY:
+                        if (b != 0) pressedKeys.add(a); else pressedKeys.remove(a);
+                        if (keyCb != null) keyCb.invoke(FAKE_WINDOW, a, a /*scancode*/, b, c);
+                        break;
+                    case EV_CHAR:
+                        if (charCb != null) charCb.invoke(FAKE_WINDOW, a);
+                        break;
+                    default:
+                        break;
+                }
+            }
+        } while (n == DRAIN_RECORDS); // buffer was full; keep draining
+    }
 
     public static void glfwWaitEvents() { /* no-op */ }
 
@@ -111,6 +166,23 @@ public final class GLFW {
     // Just above SK's minimum to be safe if the minimum increases in the future
     private static volatile int width = 1280;
     private static volatile int height = 720;
+
+    // --- live input state (read back by SK via glfwGet* during callbacks/poll) ---
+    private static volatile double cursorX = 0, cursorY = 0;
+    private static final boolean[] mouseButtons = new boolean[8];
+    private static final java.util.Set<Integer> pressedKeys =
+        java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    // Stored input callbacks. SK installs these via glfwSet*Callback; we invoke
+    // them from glfwPollEvents on the main thread. Kept as the *I functional
+    // interfaces (what SK passes); the concrete return types are unused (SK
+    // ignores the "previous callback" return value).
+    private static GLFWKeyCallbackI         keyCb;
+    private static GLFWCharCallbackI        charCb;
+    private static GLFWMouseButtonCallbackI mouseButtonCb;
+    private static GLFWCursorPosCallbackI   cursorPosCb;
+    private static GLFWScrollCallbackI      scrollCb;
+    private static GLFWWindowFocusCallbackI focusCb;
 
     public static long glfwCreateWindow(int w, int h, CharSequence title, long monitor, long share) {
         // SK sends what it WANTS the window to be but like, we don't always 
@@ -207,19 +279,19 @@ public final class GLFW {
     private static native void nativeMakeContextCurrent(long window);
     private static native void nativeSwapBuffers(long window);
 
-    // --- callbacks: store and forget for now ---
+    // --- callbacks: input ones are stored and driven from glfwPollEvents ---
     public static GLFWErrorCallback glfwSetErrorCallback(GLFWErrorCallbackI cb) { return null; }
-    public static GLFWKeyCallback glfwSetKeyCallback(long window, GLFWKeyCallbackI cb) { return null; }
-    public static GLFWCharCallback glfwSetCharCallback(long window, GLFWCharCallbackI cb) { return null; }
+    public static GLFWKeyCallback glfwSetKeyCallback(long window, GLFWKeyCallbackI cb) { keyCb = cb; return null; }
+    public static GLFWCharCallback glfwSetCharCallback(long window, GLFWCharCallbackI cb) { charCb = cb; return null; }
     public static GLFWCharModsCallback glfwSetCharModsCallback(long window, GLFWCharModsCallbackI cb) { return null; }
-    public static GLFWMouseButtonCallback glfwSetMouseButtonCallback(long window, GLFWMouseButtonCallbackI cb) { return null; }
-    public static GLFWCursorPosCallback glfwSetCursorPosCallback(long window, GLFWCursorPosCallbackI cb) { return null; }
+    public static GLFWMouseButtonCallback glfwSetMouseButtonCallback(long window, GLFWMouseButtonCallbackI cb) { mouseButtonCb = cb; return null; }
+    public static GLFWCursorPosCallback glfwSetCursorPosCallback(long window, GLFWCursorPosCallbackI cb) { cursorPosCb = cb; return null; }
     public static GLFWCursorEnterCallback glfwSetCursorEnterCallback(long window, GLFWCursorEnterCallbackI cb) { return null; }
-    public static GLFWScrollCallback glfwSetScrollCallback(long window, GLFWScrollCallbackI cb) { return null; }
+    public static GLFWScrollCallback glfwSetScrollCallback(long window, GLFWScrollCallbackI cb) { scrollCb = cb; return null; }
     public static GLFWFramebufferSizeCallback glfwSetFramebufferSizeCallback(long window, GLFWFramebufferSizeCallbackI cb) { return null; }
     public static GLFWWindowSizeCallback glfwSetWindowSizeCallback(long window, GLFWWindowSizeCallbackI cb) { return null; }
     public static GLFWWindowPosCallback glfwSetWindowPosCallback(long window, GLFWWindowPosCallbackI cb) { return null; }
-    public static GLFWWindowFocusCallback glfwSetWindowFocusCallback(long window, GLFWWindowFocusCallbackI cb) { return null; }
+    public static GLFWWindowFocusCallback glfwSetWindowFocusCallback(long window, GLFWWindowFocusCallbackI cb) { focusCb = cb; return null; }
     public static GLFWWindowCloseCallback glfwSetWindowCloseCallback(long window, GLFWWindowCloseCallbackI cb) { return null; }
     public static GLFWWindowIconifyCallback glfwSetWindowIconifyCallback(long window, GLFWWindowIconifyCallbackI cb) { return null; }
     public static GLFWWindowMaximizeCallback glfwSetWindowMaximizeCallback(long window, GLFWWindowMaximizeCallbackI cb) { return null; }
@@ -227,14 +299,18 @@ public final class GLFW {
     public static GLFWDropCallback glfwSetDropCallback(long window, GLFWDropCallbackI cb) { return null; }
     public static GLFWMonitorCallback glfwSetMonitorCallback(GLFWMonitorCallbackI cb) { return null; }
 
-    // --- input state ---
-    public static int glfwGetKey(long window, int key) { return 0 /* GLFW_RELEASE */; }
-    public static int glfwGetMouseButton(long window, int button) { return 0; }
-    public static void glfwGetCursorPos(long window, double[] xs, double[] ys) {
-        if (xs != null && xs.length > 0) xs[0] = 0;
-        if (ys != null && ys.length > 0) ys[0] = 0;
+    // --- input state (live; mirrors what the event pump last saw) ---
+    public static int glfwGetKey(long window, int key) {
+        return pressedKeys.contains(key) ? 1 /* GLFW_PRESS */ : 0 /* GLFW_RELEASE */;
     }
-    public static void glfwSetCursorPos(long window, double x, double y) { /* no-op */ }
+    public static int glfwGetMouseButton(long window, int button) {
+        return (button >= 0 && button < mouseButtons.length && mouseButtons[button]) ? 1 : 0;
+    }
+    public static void glfwGetCursorPos(long window, double[] xs, double[] ys) {
+        if (xs != null && xs.length > 0) xs[0] = cursorX;
+        if (ys != null && ys.length > 0) ys[0] = cursorY;
+    }
+    public static void glfwSetCursorPos(long window, double x, double y) { cursorX = x; cursorY = y; }
     public static void glfwSetInputMode(long window, int mode, int value) { /* no-op */ }
     public static int glfwGetInputMode(long window, int mode) { return 0; }
 
@@ -260,16 +336,61 @@ public final class GLFW {
     public static String glfwGetKeyName(int key, int scancode) { return null; }
     public static int glfwGetKeyScancode(int key) { return key; }
 
-    // --- joystick / gamepad: We WILL need these, but for now... ---
-    public static boolean glfwJoystickPresent(int jid) { return false; }
-    public static boolean glfwJoystickIsGamepad(int jid) { return false; }
-    public static java.nio.FloatBuffer  glfwGetJoystickAxes(int jid)    { return null; }
-    public static java.nio.ByteBuffer   glfwGetJoystickButtons(int jid) { return null; }
+    // --- joystick / gamepad ---
+    // We expose a single virtual controller on jid 0, backed by Android input
+    // state stashed natively. SK polls these every frame in DisplayRoot.
+    // Android already normalizes to the GLFW standard layout, so glfwGetGamepadState
+    // just copies the native mailbox into the LWJGL struct.
+    private static final int GP_BUTTONS = 15;
+    private static final int GP_AXES = 6;
+    private static final byte[] gpButtons = new byte[GP_BUTTONS];
+    private static final float[] gpAxes = new float[GP_AXES];
+    private static native boolean nativeGamepadPresent();
+    private static native boolean nativeGetGamepadState(byte[] outButtons, float[] outAxes);
+
+    public static boolean glfwJoystickPresent(int jid) {
+        return jid == GLFW_JOYSTICK_1 && nativeGamepadPresent();
+    }
+    public static boolean glfwJoystickIsGamepad(int jid) {
+        return jid == GLFW_JOYSTICK_1 && nativeGamepadPresent();
+    }
+    // Raw-joystick reads: SK uses these to *validate* controller bindings
+    // (PseudoKeys.isValid), separate from the gamepad-state activation path.
+    // Back them with the same native state so axis/button bindings validate.
+    // Direct, native-order buffers refilled per call (called on the main thread).
+    private static java.nio.FloatBuffer joyAxesBuf;
+    private static java.nio.ByteBuffer  joyButtonsBuf;
+    public static java.nio.FloatBuffer glfwGetJoystickAxes(int jid) {
+        if (jid != GLFW_JOYSTICK_1 || !nativeGetGamepadState(gpButtons, gpAxes)) return null;
+        if (joyAxesBuf == null) {
+            joyAxesBuf = java.nio.ByteBuffer.allocateDirect(GP_AXES * 4)
+                .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer();
+        }
+        joyAxesBuf.clear();
+        joyAxesBuf.put(gpAxes, 0, GP_AXES).flip();
+        return joyAxesBuf;
+    }
+    public static java.nio.ByteBuffer glfwGetJoystickButtons(int jid) {
+        if (jid != GLFW_JOYSTICK_1 || !nativeGetGamepadState(gpButtons, gpAxes)) return null;
+        if (joyButtonsBuf == null) {
+            joyButtonsBuf = java.nio.ByteBuffer.allocateDirect(GP_BUTTONS)
+                .order(java.nio.ByteOrder.nativeOrder());
+        }
+        joyButtonsBuf.clear();
+        joyButtonsBuf.put(gpButtons, 0, GP_BUTTONS).flip();
+        return joyButtonsBuf;
+    }
     public static java.nio.ByteBuffer   glfwGetJoystickHats(int jid)    { return null; }
     public static String glfwGetJoystickName(int jid) { return null; }
     public static String glfwGetJoystickGUID(int jid) { return null; }
-    public static String glfwGetGamepadName(int jid) { return null; }
-    public static boolean glfwGetGamepadState(int jid, GLFWGamepadState state) { return false; }
+    public static String glfwGetGamepadName(int jid) { return "android-gamepad"; }
+    public static boolean glfwGetGamepadState(int jid, GLFWGamepadState state) {
+        if (jid != GLFW_JOYSTICK_1 || state == null) return false;
+        if (!nativeGetGamepadState(gpButtons, gpAxes)) return false;
+        for (int i = 0; i < GP_BUTTONS; i++) state.buttons(i, gpButtons[i]);
+        for (int i = 0; i < GP_AXES; i++) state.axes(i, gpAxes[i]);
+        return true;
+    }
     public static void glfwSetJoystickUserPointer(int jid, long pointer) { /* no-op */ }
     public static long glfwGetJoystickUserPointer(int jid) { return 0L; }
     public static int glfwUpdateGamepadMappings(java.nio.ByteBuffer mapping) { return 0; }
