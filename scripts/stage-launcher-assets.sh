@@ -37,4 +37,13 @@ stage "$REPO_ROOT/out/lwjgl3/lwjgl-3.4.1-android-modules.zip" \
     echo "  (run ./scripts/build-lwjgl3-android.sh first)"
 
 echo
+echo "=== caciocavallo (AWT bridge) ==="
+stage "$REPO_ROOT/out/cacio/cacio-shared.jar" \
+      "$LAUNCHER/assets/cacio/cacio-shared.jar" || \
+    echo "  (run ./scripts/build-cacio-android.sh first)"
+stage "$REPO_ROOT/out/cacio/cacio-tta.jar" \
+      "$LAUNCHER/assets/cacio/cacio-tta.jar" || \
+    echo "  (run ./scripts/build-cacio-android.sh first)"
+
+echo
 echo "done."

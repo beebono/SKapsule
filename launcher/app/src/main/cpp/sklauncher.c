@@ -50,6 +50,7 @@ static struct {
     char classpath[8192];
     char lib_path[2048];
     char app_files[1024];
+    char cacio_dir[1024];
 } jvm = { .started = ATOMIC_VAR_INIT(false) };
 
 // --- input event ring buffer --------------------------------------------------
@@ -408,27 +409,85 @@ static void *jvm_thread_main(void *arg) {
     // Redirect Linux-style /tmp to writable for Android to fix font loading
     snprintf(opt_tmpdir,      sizeof opt_tmpdir,      "-Djava.io.tmpdir=%s/sk/tmp",    jvm.app_files);
 
-    JavaVMOption options[] = {
-        { .optionString = opt_home,        .extraInfo = NULL },
-        { .optionString = opt_libpath,     .extraInfo = NULL },
-        { .optionString = opt_classpath,   .extraInfo = NULL },
-        { .optionString = opt_appdir,      .extraInfo = NULL },
-        { .optionString = opt_rsrcdir,     .extraInfo = NULL },
-        { .optionString = opt_crucibledir, .extraInfo = NULL },
-        { .optionString = opt_tmpdir,      .extraInfo = NULL },
-        { .optionString = "-Dorg.lwjgl.util.NoChecks=true",                    .extraInfo = NULL },
-        { .optionString = "-Dcom.threerings.froth.disable_steam_api=true",     .extraInfo = NULL },
-        { .optionString = "-Dno_log_redir=true",                               .extraInfo = NULL },
-        { .optionString = "--add-opens=java.base/java.lang=ALL-UNNAMED",       .extraInfo = NULL },
-        { .optionString = "--add-opens=java.base/java.util=ALL-UNNAMED",       .extraInfo = NULL },
-        { .optionString = "--enable-native-access=ALL-UNNAMED",                .extraInfo = NULL },
-        { .optionString = "-XX:-CreateCoredumpOnCrash",                        .extraInfo = NULL },
-        { .optionString = "-XX:+SuppressFatalErrorMessage",                    .extraInfo = NULL },
-    };
+    // caciocavallo AWT bridge (optional): non-headless toolkit so SK's cursor/
+    // dialog/clipboard AWT calls work without X11. Enabled when cacio_dir is set.
+    bool cacio = jvm.cacio_dir[0] != '\0';
+    char opt_cacio_bootcp[2400];
+    char opt_cacio_agent[1200];
+    char opt_cacio_screensize[64];
+    if (cacio) {
+        snprintf(opt_cacio_bootcp, sizeof opt_cacio_bootcp,
+                 "-Xbootclasspath/a:%s/cacio-shared.jar:%s/cacio-tta.jar",
+                 jvm.cacio_dir, jvm.cacio_dir);
+        snprintf(opt_cacio_agent, sizeof opt_cacio_agent,
+                 "-javaagent:%s/cacio-tta.jar", jvm.cacio_dir);
+        int sw = gfx.width  > 0 ? gfx.width  : 1280;
+        int sh = gfx.height > 0 ? gfx.height : 720;
+        snprintf(opt_cacio_screensize, sizeof opt_cacio_screensize,
+                 "-Dcacio.managed.screensize=%dx%d", sw, sh);
+    }
+
+    JavaVMOption options[64];
+    int nopt = 0;
+    #define ADD_OPT(s) do { \
+        if (nopt < (int)(sizeof options / sizeof options[0])) { \
+            options[nopt].optionString = (char *)(s); \
+            options[nopt].extraInfo = NULL; \
+            nopt++; \
+        } \
+    } while (0)
+
+    ADD_OPT(opt_home);
+    ADD_OPT(opt_libpath);
+    ADD_OPT(opt_classpath);
+    ADD_OPT(opt_appdir);
+    ADD_OPT(opt_rsrcdir);
+    ADD_OPT(opt_crucibledir);
+    ADD_OPT(opt_tmpdir);
+    ADD_OPT("-Dorg.lwjgl.util.NoChecks=true");
+    ADD_OPT("-Dcom.threerings.froth.disable_steam_api=true");
+    ADD_OPT("-Dno_log_redir=true");
+    ADD_OPT("--add-opens=java.base/java.lang=ALL-UNNAMED");
+    ADD_OPT("--add-opens=java.base/java.util=ALL-UNNAMED");
+    ADD_OPT("--enable-native-access=ALL-UNNAMED");
+    ADD_OPT("-XX:-CreateCoredumpOnCrash");
+    ADD_OPT("-XX:+SuppressFatalErrorMessage");
+
+    if (cacio) {
+        ADD_OPT(opt_cacio_bootcp);
+        ADD_OPT(opt_cacio_agent);   // cacio-tta PreMain-Class preloads the toolkit
+        ADD_OPT("-Djava.awt.headless=false");
+        ADD_OPT("-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit");
+        ADD_OPT("-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment");
+        ADD_OPT(opt_cacio_screensize);
+        ADD_OPT("-Dcacio.font.fontmanager=sun.awt.X11FontManager");
+        ADD_OPT("-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler");
+        // java.desktop internals cacio reflects into (from the cacio pom argLine).
+        ADD_OPT("--add-exports=java.desktop/java.awt=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/sun.awt=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/sun.awt.event=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/sun.awt.datatransfer=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/sun.java2d=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/sun.java2d.pipe=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/sun.font=ALL-UNNAMED");
+        ADD_OPT("--add-exports=java.desktop/java.awt.dnd.peer=ALL-UNNAMED");
+        ADD_OPT("--add-opens=java.desktop/java.awt=ALL-UNNAMED");
+        ADD_OPT("--add-opens=java.desktop/sun.java2d=ALL-UNNAMED");
+        ADD_OPT("--add-opens=java.base/java.lang.reflect=ALL-UNNAMED");
+        // cacio FontManagerUtil setAccessible's sun.font.FontManagerFactory.instance:
+        // needs opens (not just exports). (java.base/sun.security.action dropped: that
+        // package isn't in JRE 25, so the export warned and did nothing.)
+        ADD_OPT("--add-opens=java.desktop/sun.font=ALL-UNNAMED");
+        LOGI("cacio AWT bridge enabled (dir=%s)", jvm.cacio_dir);
+    }
+    #undef ADD_OPT
+
     JavaVMInitArgs args = {
         .version            = JNI_VERSION_1_8,
         .options            = options,
-        .nOptions           = sizeof(options) / sizeof(options[0]),
+        .nOptions           = nopt,
         .ignoreUnrecognized = JNI_FALSE,
     };
 
@@ -540,7 +599,8 @@ static void copy_arg(char *dst, size_t dst_sz, const char *src) {
 }
 
 static void start_jvm_thread_once(const char *jre_home, const char *classpath,
-                                  const char *lib_path, const char *app_files) {
+                                  const char *lib_path, const char *app_files,
+                                  const char *cacio_dir) {
     bool expected = false;
     if (!atomic_compare_exchange_strong(&jvm.started, &expected, true)) {
         LOGW("JVM thread already started");
@@ -550,6 +610,7 @@ static void start_jvm_thread_once(const char *jre_home, const char *classpath,
     copy_arg(jvm.classpath, sizeof(jvm.classpath), classpath);
     copy_arg(jvm.lib_path,  sizeof(jvm.lib_path),  lib_path);
     copy_arg(jvm.app_files, sizeof(jvm.app_files), app_files);
+    copy_arg(jvm.cacio_dir, sizeof(jvm.cacio_dir), cacio_dir);
 
     int rc = pthread_create(&jvm.thread, NULL, jvm_thread_main, NULL);
     if (rc != 0) {
@@ -693,21 +754,25 @@ Java_com_skarm_launcher_NativeBridge_onSurfaceDestroyed(JNIEnv *env, jobject thi
 JNIEXPORT void JNICALL
 Java_com_skarm_launcher_NativeBridge_startJvm(JNIEnv *env, jobject thiz,
                                               jstring jreHome, jstring classpath,
-                                              jstring libPath, jstring appFiles) {
+                                              jstring libPath, jstring appFiles,
+                                              jstring cacioDir) {
     const char *home = (*env)->GetStringUTFChars(env, jreHome,   NULL);
     const char *cp   = (*env)->GetStringUTFChars(env, classpath, NULL);
     const char *lp   = (*env)->GetStringUTFChars(env, libPath,   NULL);
     const char *af   = (*env)->GetStringUTFChars(env, appFiles,  NULL);
+    const char *cd   = (*env)->GetStringUTFChars(env, cacioDir,  NULL);
     LOGI("startJvm requested");
     LOGI("  jreHome   = %s", home);
     LOGI("  classpath = %s", cp);
     LOGI("  libPath   = %s", lp);
     LOGI("  appFiles  = %s", af);
-    start_jvm_thread_once(home, cp, lp, af);
+    LOGI("  cacioDir  = %s", cd);
+    start_jvm_thread_once(home, cp, lp, af, cd);
     (*env)->ReleaseStringUTFChars(env, jreHome,   home);
     (*env)->ReleaseStringUTFChars(env, classpath, cp);
     (*env)->ReleaseStringUTFChars(env, libPath,   lp);
     (*env)->ReleaseStringUTFChars(env, appFiles,  af);
+    (*env)->ReleaseStringUTFChars(env, cacioDir,  cd);
 }
 
 JNIEXPORT void JNICALL

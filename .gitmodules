@@ -11,3 +11,7 @@
 [submodule "gl4es"]
 	path = gl4es
 	url = https://github.com/beebono/gl4es.git
+[submodule "caciocavallo17"]
+	path = caciocavallo17
+	url = https://github.com/AngelAuraMC/caciocavallo17.git
+	branch = java-25

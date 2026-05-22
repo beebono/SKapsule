@@ -215,11 +215,14 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 SkInstaller.bootstrapClasspath(this),
                 LwjglInstaller.classpath(this),
             ).filter { it.isNotEmpty() }.joinToString(":")
+            // Re-stage the cacio AWT bridge so a rebuilt jar always propagates.
+            val cacioDir = CacioInstaller.stage(this).absolutePath
             NativeBridge.startJvm(
                 jreHome = JreInstaller.homeDir(this).absolutePath,
                 classpath = classpath,
                 libPath = libPath,
                 appFiles = filesDir.absolutePath,
+                cacioDir = cacioDir,
             )
         }
     }

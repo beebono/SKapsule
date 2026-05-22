@@ -21,8 +21,15 @@ object NativeBridge {
 
     /**
      * Spins up the JVM on its own pthread and returns immediately since JVM init happens async.
+     * @param cacioDir directory holding the staged cacio jars (AWT bridge); empty to disable.
      */
-    external fun startJvm(jreHome: String, classpath: String, libPath: String, appFiles: String)
+    external fun startJvm(
+        jreHome: String,
+        classpath: String,
+        libPath: String,
+        appFiles: String,
+        cacioDir: String,
+    )
 
     /** Launches Spiral Knights inside the running JVM. (Stub) */
     external fun launchGame(gameDir: String, loginMode: String)
