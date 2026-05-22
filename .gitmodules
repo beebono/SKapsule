@@ -1,0 +1,13 @@
+[submodule "frenchpress"]
+	path = frenchpress
+	url = https://github.com/beebono/frenchpress.git
+[submodule "openal-soft"]
+	path = openal-soft
+	url = https://github.com/kcat/openal-soft.git
+[submodule "lwjgl3"]
+	path = lwjgl3
+	url = https://github.com/AngelAuraMC/lwjgl3.git
+	branch = wip/rebase_3.4.1
+[submodule "gl4es"]
+	path = gl4es
+	url = https://github.com/beebono/gl4es.git

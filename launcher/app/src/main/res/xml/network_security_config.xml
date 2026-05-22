@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Spiral Knights' CDN and getdown manifest are served over plain HTTP.
+  Allow cleartext only for SK-owned domains; everything else stays HTTPS-only.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">spiralknights.com</domain>
+        <domain includeSubdomains="true">threerings.net</domain>
+    </domain-config>
+</network-security-config>

@@ -1,0 +1,10 @@
+.gradle/
+build/
+.idea/
+local.properties
+.cxx/
+*.iml
+captures/
+app/src/main/jniLibs/*/*.so
+app/src/main/assets/lwjgl/*.zip
+app/src/main/assets/sk/sk-bootstrap.jar

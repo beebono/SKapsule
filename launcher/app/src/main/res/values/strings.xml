@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SK Launcher</string>
+    <string name="play_web">Play (Web)</string>
+    <string name="play_steam">Play (Steam)</string>
+    <string name="exit">Exit</string>
+    <string name="exit_confirm_message">Exit Spiral Knights?</string>
+    <string name="exit_confirm_yes">Exit</string>
+    <string name="exit_confirm_no">Keep playing</string>
+    <string name="setup_starting">Preparing runtime…</string>
+</resources>
