@@ -3,7 +3,7 @@
     <string name="app_name">SK Launcher</string>
     <string name="play_web">Play (Web)</string>
     <string name="play_steam">Play (Steam)</string>
-    <string name="exit">Exit</string>
+    <string name="keyboard">Keyboard</string>
     <string name="exit_confirm_message">Exit Spiral Knights?</string>
     <string name="exit_confirm_yes">Exit</string>
     <string name="exit_confirm_no">Keep playing</string>

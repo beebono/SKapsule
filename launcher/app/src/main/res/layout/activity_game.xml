@@ -10,14 +10,22 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Exit is handled by Android Back (-> exit-confirm dialog). -->
     <com.google.android.material.button.MaterialButton
-        android:id="@+id/btn_exit"
+        android:id="@+id/btn_keyboard"
         style="@style/Widget.Material3.Button.IconButton.Filled.Tonal"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|center_horizontal"
         android:layout_margin="12dp"
         android:alpha="0.55"
-        android:text="@string/exit" />
+        android:text="@string/keyboard" />
+
+    <!-- Invisible focusable view that hosts the soft-keyboard InputConnection and
+         forwards typed input to SK (the SurfaceView can't host an IME). -->
+    <com.skarm.launcher.ImeBridgeView
+        android:id="@+id/ime_bridge"
+        android:layout_width="1dp"
+        android:layout_height="1dp" />
 
 </FrameLayout>

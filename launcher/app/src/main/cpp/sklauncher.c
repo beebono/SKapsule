@@ -37,11 +37,19 @@ static struct {
     EGLSurface surface;
     int width, height;
     bool gl4es_initialized;
+    // Set when the window surface changes (first bring-up / Android resume) so SK's
+    // render thread re-binds it on its next frame — only that thread can make the
+    // EGL context current. Display+context outlive surface loss to keep GL resources.
+    atomic_int surface_dirty;
 } gfx = {
     .display = EGL_NO_DISPLAY,
     .context = EGL_NO_CONTEXT,
     .surface = EGL_NO_SURFACE,
 };
+
+// Serializes surface lifecycle (UI thread create/destroy) against the render
+// thread's bind/swap, so a background teardown can't free a surface mid-eglSwapBuffers.
+static pthread_mutex_t egl_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static struct {
     pthread_t thread;
@@ -121,52 +129,69 @@ static const char *egl_err_str(EGLint e) {
     }
 }
 
+// Brings up the EGL surface for the current window. Display + context are created
+// once and intentionally kept alive across surface loss (Android backgrounding) so
+// SK's GL resources survive; only the window surface is (re)created here. Runs on
+// the UI thread; SK's render thread binds the result via surface_dirty.
 static bool egl_bring_up(void) {
     if (!gfx.window) { LOGE("egl_bring_up: no ANativeWindow"); return false; }
-    if (gfx.surface != EGL_NO_SURFACE) return true;
 
-    gfx.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (gfx.display == EGL_NO_DISPLAY) { LOGE("eglGetDisplay failed"); return false; }
+    pthread_mutex_lock(&egl_lock);
+    bool ok = false;
 
-    EGLint major = 0, minor = 0;
-    if (!eglInitialize(gfx.display, &major, &minor)) {
-        LOGE("eglInitialize failed: %s", egl_err_str(eglGetError())); return false;
+    if (gfx.display == EGL_NO_DISPLAY) {
+        gfx.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        if (gfx.display == EGL_NO_DISPLAY) { LOGE("eglGetDisplay failed"); goto out; }
+
+        EGLint major = 0, minor = 0;
+        if (!eglInitialize(gfx.display, &major, &minor)) {
+            LOGE("eglInitialize failed: %s", egl_err_str(eglGetError())); goto out;
+        }
+        LOGI("EGL %d.%d initialized (vendor=%s)",
+             major, minor, eglQueryString(gfx.display, EGL_VENDOR));
+
+        const EGLint attribs[] = {
+            EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
+            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+            EGL_RED_SIZE,        8,
+            EGL_GREEN_SIZE,      8,
+            EGL_BLUE_SIZE,       8,
+            EGL_ALPHA_SIZE,      8,
+            EGL_DEPTH_SIZE,      24,
+            EGL_STENCIL_SIZE,    8,
+            EGL_NONE
+        };
+        EGLint num_configs = 0;
+        if (!eglChooseConfig(gfx.display, attribs, &gfx.config, 1, &num_configs) || num_configs < 1) {
+            LOGE("eglChooseConfig failed: %s", egl_err_str(eglGetError())); goto out;
+        }
     }
-    LOGI("EGL %d.%d initialized (vendor=%s)",
-         major, minor, eglQueryString(gfx.display, EGL_VENDOR));
 
-    const EGLint attribs[] = {
-        EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_RED_SIZE,        8,
-        EGL_GREEN_SIZE,      8,
-        EGL_BLUE_SIZE,       8,
-        EGL_ALPHA_SIZE,      8,
-        EGL_DEPTH_SIZE,      24,
-        EGL_STENCIL_SIZE,    8,
-        EGL_NONE
-    };
-    EGLint num_configs = 0;
-    if (!eglChooseConfig(gfx.display, attribs, &gfx.config, 1, &num_configs) || num_configs < 1) {
-        LOGE("eglChooseConfig failed: %s", egl_err_str(eglGetError())); return false;
-    }
-
-    EGLint native_visual_id = 0;
-    eglGetConfigAttrib(gfx.display, gfx.config, EGL_NATIVE_VISUAL_ID, &native_visual_id);
-    ANativeWindow_setBuffersGeometry(gfx.window, 0, 0, native_visual_id);
-
-    const EGLint ctx_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-    gfx.context = eglCreateContext(gfx.display, gfx.config, EGL_NO_CONTEXT, ctx_attribs);
     if (gfx.context == EGL_NO_CONTEXT) {
-        LOGE("eglCreateContext failed: %s", egl_err_str(eglGetError())); return false;
+        const EGLint ctx_attribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+        gfx.context = eglCreateContext(gfx.display, gfx.config, EGL_NO_CONTEXT, ctx_attribs);
+        if (gfx.context == EGL_NO_CONTEXT) {
+            LOGE("eglCreateContext failed: %s", egl_err_str(eglGetError())); goto out;
+        }
     }
 
-    gfx.surface = eglCreateWindowSurface(gfx.display, gfx.config, gfx.window, NULL);
     if (gfx.surface == EGL_NO_SURFACE) {
-        LOGE("eglCreateWindowSurface failed: %s", egl_err_str(eglGetError())); return false;
+        EGLint native_visual_id = 0;
+        eglGetConfigAttrib(gfx.display, gfx.config, EGL_NATIVE_VISUAL_ID, &native_visual_id);
+        ANativeWindow_setBuffersGeometry(gfx.window, 0, 0, native_visual_id);
+
+        gfx.surface = eglCreateWindowSurface(gfx.display, gfx.config, gfx.window, NULL);
+        if (gfx.surface == EGL_NO_SURFACE) {
+            LOGE("eglCreateWindowSurface failed: %s", egl_err_str(eglGetError())); goto out;
+        }
     }
 
-    return true;
+    // Hand the (new) surface to SK's render thread to make current on its next frame.
+    atomic_store(&gfx.surface_dirty, 1);
+    ok = true;
+out:
+    pthread_mutex_unlock(&egl_lock);
+    return ok;
 }
 
 static bool egl_make_current_on_caller_thread(void) {
@@ -182,23 +207,40 @@ static bool egl_make_current_on_caller_thread(void) {
     return true;
 }
 
-static void egl_tear_down(void) {
-    if (gfx.display != EGL_NO_DISPLAY) {
-        eglMakeCurrent(gfx.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        if (gfx.surface != EGL_NO_SURFACE) eglDestroySurface(gfx.display, gfx.surface);
-        if (gfx.context != EGL_NO_CONTEXT) eglDestroyContext(gfx.display, gfx.context);
-        eglTerminate(gfx.display);
+// Releases only the window surface on backgrounding (Android destroys the native
+// window). The EGLDisplay/EGLContext (and gl4es state) are intentionally KEPT so
+// SK's GL resources survive; on resume egl_bring_up() makes a fresh surface against
+// the same context. eglDestroySurface is deferred by EGL if the surface is still
+// current on the render thread; the EGLSurface holds its own window ref, so we
+// destroy it before dropping ours.
+static void egl_release_surface(void) {
+    pthread_mutex_lock(&egl_lock);
+    if (gfx.display != EGL_NO_DISPLAY && gfx.surface != EGL_NO_SURFACE) {
+        eglDestroySurface(gfx.display, gfx.surface);
     }
-    gfx.display = EGL_NO_DISPLAY;
-    gfx.context = EGL_NO_CONTEXT;
     gfx.surface = EGL_NO_SURFACE;
-    gfx.gl4es_initialized = false;
-
     if (gfx.window) {
         ANativeWindow_release(gfx.window);
         gfx.window = NULL;
     }
     gfx.width = gfx.height = 0;
+    pthread_mutex_unlock(&egl_lock);
+}
+
+// Called on SK's render thread (the only thread that may make the context current).
+// When the surface changed (first bring-up or resume), bind it before rendering.
+static void render_thread_rebind_if_dirty(void) {
+    if (!atomic_exchange(&gfx.surface_dirty, 0)) return;
+    pthread_mutex_lock(&egl_lock);
+    if (gfx.surface != EGL_NO_SURFACE &&
+        !eglMakeCurrent(gfx.display, gfx.surface, gfx.surface, gfx.context)) {
+        LOGW("rebind eglMakeCurrent failed: %s", egl_err_str(eglGetError()));
+        atomic_store(&gfx.surface_dirty, 1); // try again next frame
+    } else if (gfx.surface != EGL_NO_SURFACE) {
+        LOGI("EGL surface (re)bound on render tid=%ld surface=%p",
+             (long)pthread_self(), gfx.surface);
+    }
+    pthread_mutex_unlock(&egl_lock);
 }
 
 // --- gl4es activation ---------------------------------------------------------
@@ -366,6 +408,13 @@ static void *jvm_thread_main(void *arg) {
     redirect_stdio_to_log();
     LOGI("JVM thread: home=%s tid=%ld", jvm.jre_home, (long)pthread_self());
 
+    // Export the native search path so (a) jspawnhelper, exec'd as a standalone
+    // binary, can resolve its NEEDED libc++_shared.so from the app's
+    // nativeLibraryDir, and (b) cacio's CTCScreen.<clinit> getenv("LD_LIBRARY_PATH")
+    // is non-null (else it NPEs probing for the unused libpojavexec_awt.so).
+    // lib_path already carries jre25/lib:lwjgl/lib:<nativeLibraryDir> from Kotlin.
+    setenv("LD_LIBRARY_PATH", jvm.lib_path, 1);
+
     for (int i = 0; i < 50 && gfx.surface == EGL_NO_SURFACE; i++) {
         usleep(20 * 1000);
     }
@@ -400,6 +449,9 @@ static void *jvm_thread_main(void *arg) {
     char opt_rsrcdir[1400];
     char opt_crucibledir[1400];
     char opt_tmpdir[1400];
+    char opt_userhome[1400];
+    char opt_prefs_user[1400];
+    char opt_prefs_sys[1400];
     snprintf(opt_home,      sizeof opt_home,      "-Djava.home=%s",         jvm.jre_home);
     snprintf(opt_libpath,   sizeof opt_libpath,   "-Djava.library.path=%s", jvm.lib_path);
     snprintf(opt_classpath, sizeof opt_classpath, "-Djava.class.path=%s",   jvm.classpath);
@@ -408,6 +460,15 @@ static void *jvm_thread_main(void *arg) {
     snprintf(opt_crucibledir, sizeof opt_crucibledir, "-Dcrucible.dir=%s/sk/crucible", jvm.app_files);
     // Redirect Linux-style /tmp to writable for Android to fix font loading
     snprintf(opt_tmpdir,      sizeof opt_tmpdir,      "-Djava.io.tmpdir=%s/sk/tmp",    jvm.app_files);
+    // Writable HOME (outside the getdown-managed sk/ tree so updates never wipe it).
+    // Without a writable user.home + prefs roots, java.util.prefs FileSystemPreferences
+    // can't create/lock its dir -> the recurring "Could not lock User prefs" warnings
+    // and SK's settings (clyde ResourceUtil._prefs) never persist. user.home also backs
+    // frenchpress's Steam creds path (user.home/.local/share/frenchpress/steam.creds).
+    // Dirs are pre-created in Kotlin (GameActivity) to match these paths.
+    snprintf(opt_userhome,   sizeof opt_userhome,   "-Duser.home=%s/home",                       jvm.app_files);
+    snprintf(opt_prefs_user, sizeof opt_prefs_user, "-Djava.util.prefs.userRoot=%s/home/.userPrefs",   jvm.app_files);
+    snprintf(opt_prefs_sys,  sizeof opt_prefs_sys,  "-Djava.util.prefs.systemRoot=%s/home/.systemPrefs", jvm.app_files);
 
     // caciocavallo AWT bridge (optional): non-headless toolkit so SK's cursor/
     // dialog/clipboard AWT calls work without X11. Enabled when cacio_dir is set.
@@ -444,6 +505,9 @@ static void *jvm_thread_main(void *arg) {
     ADD_OPT(opt_rsrcdir);
     ADD_OPT(opt_crucibledir);
     ADD_OPT(opt_tmpdir);
+    ADD_OPT(opt_userhome);
+    ADD_OPT(opt_prefs_user);
+    ADD_OPT(opt_prefs_sys);
     ADD_OPT("-Dorg.lwjgl.util.NoChecks=true");
     ADD_OPT("-Dcom.threerings.froth.disable_steam_api=true");
     ADD_OPT("-Dno_log_redir=true");
@@ -622,15 +686,20 @@ static void start_jvm_thread_once(const char *jre_home, const char *classpath,
 static void JNICALL glfw_make_current_impl(JNIEnv *env, jclass thiz, jlong window) {
     LOGI("glfwMakeContextCurrent on tid=%ld (window=0x%llx)",
          (long)pthread_self(), (long long)(unsigned long long)window);
+    pthread_mutex_lock(&egl_lock);
     if (gfx.surface == EGL_NO_SURFACE) {
         LOGE("glfwMakeContextCurrent: no EGL surface yet");
+        pthread_mutex_unlock(&egl_lock);
         return;
     }
-    if (!egl_make_current_on_caller_thread()) return;
-    gl4es_bring_up_once();
-    // gl4es does a validity test, then tears the EGL context down... so like,
-    // make sure we actually still have an EGL context to prevent render errors.
-    egl_make_current_on_caller_thread();
+    if (egl_make_current_on_caller_thread()) {
+        gl4es_bring_up_once();
+        // gl4es does a validity test, then tears the EGL context down... so like,
+        // make sure we actually still have an EGL context to prevent render errors.
+        egl_make_current_on_caller_thread();
+        atomic_store(&gfx.surface_dirty, 0); // we just bound the current surface
+    }
+    pthread_mutex_unlock(&egl_lock);
 }
 
 static jintArray JNICALL glfw_get_surface_size_impl(JNIEnv *env, jclass thiz) {
@@ -642,18 +711,18 @@ static jintArray JNICALL glfw_get_surface_size_impl(JNIEnv *env, jclass thiz) {
 }
 
 static void JNICALL glfw_swap_buffers_impl(JNIEnv *env, jclass thiz, jlong window) {
-    if (gfx.display == EGL_NO_DISPLAY || gfx.surface == EGL_NO_SURFACE) return;
-    static atomic_int swap_count = ATOMIC_VAR_INIT(0);
-    int n = atomic_fetch_add(&swap_count, 1);
-    if (n == 0 || n == 1 || n == 10 || n == 60 || n == 600 || (n % 6000) == 0) {
-        LOGI("glfwSwapBuffers #%d (tid=%ld)", n, (long)pthread_self());
-    }
-    if (!eglSwapBuffers(gfx.display, gfx.surface)) {
-        EGLint err = eglGetError();
-        if (err != EGL_BAD_SURFACE) {
-            LOGW("eglSwapBuffers: %s", egl_err_str(err));
+    // Pick up a surface that changed while we were backgrounded (Android resume).
+    render_thread_rebind_if_dirty();
+    pthread_mutex_lock(&egl_lock);
+    if (gfx.display != EGL_NO_DISPLAY && gfx.surface != EGL_NO_SURFACE) {
+        if (!eglSwapBuffers(gfx.display, gfx.surface)) {
+            EGLint err = eglGetError();
+            if (err != EGL_BAD_SURFACE) {
+                LOGW("eglSwapBuffers: %s", egl_err_str(err));
+            }
         }
     }
+    pthread_mutex_unlock(&egl_lock);
 }
 
 // Drain up to (out.length/4) event records into the caller's int[]. Returns the
@@ -748,7 +817,7 @@ Java_com_skarm_launcher_NativeBridge_onSurfaceChanged(JNIEnv *env, jobject thiz,
 JNIEXPORT void JNICALL
 Java_com_skarm_launcher_NativeBridge_onSurfaceDestroyed(JNIEnv *env, jobject thiz) {
     LOGI("onSurfaceDestroyed");
-    egl_tear_down();
+    egl_release_surface();
 }
 
 JNIEXPORT void JNICALL

@@ -4,13 +4,19 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.hardware.input.InputManager
 import android.os.Bundle
+import android.os.Process
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.WindowManager
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.skarm.launcher.databinding.ActivityGameBinding
 import java.io.File
 import kotlin.math.abs
@@ -26,6 +32,7 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var binding: ActivityGameBinding
     private lateinit var surface: SurfaceView
     private var jvmKicked = false
+    private lateinit var loginMode: LauncherActivity.LoginMode
 
     private lateinit var inputManager: InputManager
     private val deviceListener = object : InputManager.InputDeviceListener {
@@ -49,10 +56,23 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
         inputManager.registerInputDeviceListener(deviceListener, null)
         refreshGamepadPresence()
 
-        binding.btnExit.setOnClickListener { confirmExit() }
+        binding.btnKeyboard.setOnClickListener { toggleSoftKeyboard() }
 
-        // TODO: read EXTRA_LOGIN_MODE; pass through to the JVM bootstrap once
-        // we're invoking SK rather than smoke-testing.
+        // Android Back must go through the exit-confirm dialog, not silently finish
+        // the activity (which would strand the JVM + audio in the :game process).
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = confirmExit()
+        })
+
+        loginMode = runCatching {
+            LauncherActivity.LoginMode.valueOf(
+                intent.getStringExtra(LauncherActivity.EXTRA_LOGIN_MODE).orEmpty()
+            )
+        }.getOrDefault(LauncherActivity.LoginMode.Web)
+        // TODO(frenchpress): Steam mode currently behaves identically to Web (normal
+        // account login) — the APK is local-only for now. Once frenchpress/Steam
+        // login is integrated, thread loginMode through to the SK bootstrap so Steam
+        // uses the Steam-linked credential path instead of the web login.
     }
 
     /**
@@ -191,9 +211,36 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun confirmExit() {
         AlertDialog.Builder(this)
             .setMessage(R.string.exit_confirm_message)
-            .setPositiveButton(R.string.exit_confirm_yes) { _, _ -> finishAndRemoveTask() }
+            .setPositiveButton(R.string.exit_confirm_yes) { _, _ -> shutdownGame() }
             .setNegativeButton(R.string.exit_confirm_no, null)
             .show()
+    }
+
+    /**
+     * Fully tears down the game. GameActivity runs in its own ":game" process with
+     * the embedded JVM (and OpenAL audio) on a non-daemon thread, behind a one-shot
+     * native init that can't be restarted in-process. So a confirmed exit kills the
+     * process: audio stops and the next launch starts clean. The launcher lives in a
+     * separate process and is unaffected. (Home/recents still background us normally,
+     * preserving multitasking — only an explicit Exit/Back-confirm kills.)
+     */
+    private fun shutdownGame() {
+        finishAndRemoveTask()
+        Process.killProcess(Process.myPid())
+    }
+
+    /** Pops (or dismisses) the soft keyboard, routed to SK via [ImeBridgeView]. */
+    private fun toggleSoftKeyboard() {
+        val ime = binding.imeBridge
+        val controller = WindowCompat.getInsetsController(window, ime)
+        val visible = ViewCompat.getRootWindowInsets(ime)
+            ?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
+        if (visible) {
+            controller.hide(WindowInsetsCompat.Type.ime())
+        } else {
+            ime.requestFocus()
+            controller.show(WindowInsetsCompat.Type.ime())
+        }
     }
 
     // --- SurfaceHolder.Callback ---
@@ -205,10 +252,15 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
         NativeBridge.onSurfaceChanged(width, height)
         if (!jvmKicked) {
             jvmKicked = true
-            // java.library.path = JRE's lib (libjvm, libGL via gl4es) + LWJGL natives
+            Log.i(TAG, "Launching SK (loginMode=$loginMode)")
+            // java.library.path / LD_LIBRARY_PATH = JRE's lib (libjvm, libGL via
+            // gl4es) + LWJGL natives + the app's extracted nativeLibraryDir. The
+            // last entry lets the exec'd jspawnhelper find libc++_shared.so and
+            // keeps cacio's getenv("LD_LIBRARY_PATH") non-null (see sklauncher.c).
             val libPath = listOf(
                 File(JreInstaller.homeDir(this), "lib").absolutePath,
                 LwjglInstaller.libDir(this).absolutePath,
+                applicationInfo.nativeLibraryDir,
             ).joinToString(":")
             // Classpath: SK bootstrap (getdown + sk-bootstrap) first, then LWJGL.
             val classpath = listOf(
@@ -217,6 +269,18 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
             ).filter { it.isNotEmpty() }.joinToString(":")
             // Re-stage the cacio AWT bridge so a rebuilt jar always propagates.
             val cacioDir = CacioInstaller.stage(this).absolutePath
+            // Writable HOME for the JVM (user.home + java.util.prefs roots, set in
+            // sklauncher.c). Kept outside the getdown-managed sk/ tree so updates
+            // never wipe persisted settings. Pre-create so FileSystemPreferences
+            // (whose failure mode is a missing parent dir) can lock/flush.
+            val home = File(filesDir, "home")
+            File(home, ".userPrefs").mkdirs()
+            File(home, ".systemPrefs").mkdirs()
+            // Seed default SK prefs (Compatibility + LOW, cull_transients, and
+            // anonymous_logon=false for web-account login) into SK's "projectx" node
+            // on first launch only. Path = userRoot (home/.userPrefs, see
+            // sklauncher.c) + the JDK's appended .java/.userPrefs.
+            PrefsInstaller.seedDefaults(File(home, ".userPrefs/.java/.userPrefs"))
             NativeBridge.startJvm(
                 jreHome = JreInstaller.homeDir(this).absolutePath,
                 classpath = classpath,
@@ -239,6 +303,8 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
 
     private companion object {
+        const val TAG = "GameActivity"
+
         // Mirrors the action codes in NativeBridge.onTouchEvent / sklauncher.c
         const val TOUCH_DOWN = 0
         const val TOUCH_MOVE = 1

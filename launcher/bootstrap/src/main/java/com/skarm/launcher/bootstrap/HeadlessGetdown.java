@@ -35,6 +35,18 @@ public final class HeadlessGetdown extends Getdown {
 
     @Override
     protected void launch() {
+        // getdown's real launch() releases the update lock before running the app
+        // (Getdown.java:776, the invokeDirect branch). We launch SK ourselves in
+        // SkBootstrap, but we MUST still release the lock here — otherwise our
+        // bootstrap getdown holds gettingdown.lock for the JVM's whole life, and
+        // SK's own in-game getdown (bundled in projectx, same JVM) can't lock and
+        // dies with MultipleGetdownRunning (OverlappingFileLockException).
+        try {
+            _app.releaseLock();
+        } catch (Throwable t) {
+            System.err.println("[HeadlessGetdown] releaseLock failed:");
+            t.printStackTrace();
+        }
         launchRequested = true;
         done.countDown();
     }
