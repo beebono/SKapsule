@@ -22,6 +22,11 @@ object NativeBridge {
     /**
      * Spins up the JVM on its own pthread and returns immediately since JVM init happens async.
      * @param cacioDir directory holding the staged cacio jars (AWT bridge); empty to disable.
+     * @param frenchpressJar path to frenchpress.jar; prepended to SK's classpath (Steam-login
+     *   shim). Empty to disable.
+     * @param credFile path to frenchpress's Steam refresh-token store (FRENCHPRESS_CRED_FILE).
+     * @param steamUser,steamPass Steam credentials for a first login (env vars). Empty = web
+     *   login (frenchpress treats an empty username as a web account).
      */
     external fun startJvm(
         jreHome: String,
@@ -29,6 +34,10 @@ object NativeBridge {
         libPath: String,
         appFiles: String,
         cacioDir: String,
+        frenchpressJar: String,
+        credFile: String,
+        steamUser: String,
+        steamPass: String,
     )
 
     /** Launches Spiral Knights inside the running JVM. (Stub) */

@@ -2,8 +2,12 @@ package com.skarm.launcher
 
 import android.content.Intent
 import android.os.Bundle
+import android.text.InputType
 import android.util.Log
 import android.view.View
+import android.widget.EditText
+import android.widget.LinearLayout
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.skarm.launcher.databinding.ActivityLauncherBinding
@@ -29,7 +33,7 @@ class LauncherActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.btnPlayWeb.setOnClickListener { launchGame(LoginMode.Web) }
-        binding.btnPlaySteam.setOnClickListener { launchGame(LoginMode.Steam) }
+        binding.btnPlaySteam.setOnClickListener { onPlaySteam() }
 
         ensureRuntime()
     }
@@ -72,9 +76,58 @@ class LauncherActivity : AppCompatActivity() {
         binding.btnPlaySteam.isEnabled = enabled
     }
 
-    private fun launchGame(mode: LoginMode) {
+    /**
+     * Steam path. frenchpress persists a Steam refresh token after the first
+     * successful login, so we only prompt for username/password when no creds file
+     * exists yet; subsequent launches resume silently from the token. The collected
+     * credentials are passed straight through to the game JVM (env vars set in
+     * sklauncher.c) and never stored in plaintext by the launcher.
+     */
+    private fun onPlaySteam() {
+        if (FrenchpressInstaller.credFile(this).exists()) {
+            launchGame(LoginMode.Steam)
+        } else {
+            promptSteamLogin()
+        }
+    }
+
+    private fun promptSteamLogin() {
+        val pad = (resources.displayMetrics.density * 20).toInt()
+        val userField = EditText(this).apply {
+            hint = getString(R.string.steam_username)
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        val passField = EditText(this).apply {
+            hint = getString(R.string.steam_password)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(userField)
+            addView(passField)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.steam_login_title)
+            .setMessage(R.string.steam_login_message)
+            .setView(layout)
+            .setPositiveButton(R.string.steam_login_ok) { _, _ ->
+                val user = userField.text.toString().trim()
+                val pass = passField.text.toString()
+                // Empty username => web account; frenchpress treats it as such.
+                launchGame(LoginMode.Steam, user, pass)
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun launchGame(mode: LoginMode, steamUser: String = "", steamPass: String = "") {
         startActivity(Intent(this, GameActivity::class.java).apply {
             putExtra(EXTRA_LOGIN_MODE, mode.name)
+            if (steamUser.isNotEmpty()) {
+                putExtra(EXTRA_STEAM_USER, steamUser)
+                putExtra(EXTRA_STEAM_PASS, steamPass)
+            }
         })
     }
 
@@ -83,5 +136,7 @@ class LauncherActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "LauncherActivity"
         const val EXTRA_LOGIN_MODE = "com.skarm.launcher.LOGIN_MODE"
+        const val EXTRA_STEAM_USER = "com.skarm.launcher.STEAM_USER"
+        const val EXTRA_STEAM_PASS = "com.skarm.launcher.STEAM_PASS"
     }
 }

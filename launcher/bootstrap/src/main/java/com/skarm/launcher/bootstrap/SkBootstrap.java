@@ -142,12 +142,27 @@ public final class SkBootstrap {
         List<URL> urls = new ArrayList<>();
         int included = 0, skippedLwjgl = 0, skippedExcluded = 0, skippedNatives = 0;
         try {
-            // Put sk-bootstrap.jar FIRST so our shadow classes (org.lwjgl.glfw.GLFW
-            // and later frenchpress' froth-foamy classes) win over the upstream.
+            // Put sk-bootstrap.jar FIRST so our shadow classes (org.lwjgl.glfw.GLFW)
+            // win over the upstream.
             File ownJar = new File(codeDir, "sk-bootstrap.jar");
             if (ownJar.isFile()) {
                 urls.add(ownJar.toURI().toURL());
                 System.out.println("[SkBootstrap] sk-bootstrap.jar pinned first on SK classpath");
+            }
+
+            // frenchpress next, ahead of the SK jars, so its com.threerings.froth.*
+            // (SteamAPI etc.) shadow the froth-foamy classes bundled in projectx-pcode.jar.
+            // Path comes from sklauncher.c (-Dfrenchpress.jar), set only in Steam mode;
+            // Web launches omit it so a stored Steam token can't override the web choice.
+            String fpJar = System.getProperty("frenchpress.jar");
+            if (fpJar != null && !fpJar.isEmpty()) {
+                File fp = new File(fpJar);
+                if (fp.isFile()) {
+                    urls.add(fp.toURI().toURL());
+                    System.out.println("[SkBootstrap] frenchpress.jar pinned ahead of SK jars: " + fp);
+                } else {
+                    System.err.println("[SkBootstrap] -Dfrenchpress.jar set but missing: " + fp);
+                }
             }
 
             for (File jar : skJars) {

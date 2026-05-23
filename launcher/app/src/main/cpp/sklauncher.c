@@ -59,6 +59,10 @@ static struct {
     char lib_path[2048];
     char app_files[1024];
     char cacio_dir[1024];
+    char frenchpress_jar[1024];  // prepended to SK classpath (-Dfrenchpress.jar); empty = off
+    char cred_file[1024];        // FRENCHPRESS_CRED_FILE (Steam refresh-token store)
+    char steam_user[256];        // FRENCHPRESS_STEAM_USER (first login only); empty = web
+    char steam_pass[256];        // FRENCHPRESS_STEAM_PASS
 } jvm = { .started = ATOMIC_VAR_INIT(false) };
 
 // --- input event ring buffer --------------------------------------------------
@@ -415,6 +419,14 @@ static void *jvm_thread_main(void *arg) {
     // lib_path already carries jre25/lib:lwjgl/lib:<nativeLibraryDir> from Kotlin.
     setenv("LD_LIBRARY_PATH", jvm.lib_path, 1);
 
+    // frenchpress (Steam-login shim) env. Must be set before JNI_CreateJavaVM so
+    // System.getenv sees them. CRED_FILE points the FileCredentialStore at our
+    // user.home; STEAM_USER/PASS are present only on a first Steam login — absent
+    // for web login, which frenchpress reads as an empty-username web account.
+    if (jvm.cred_file[0])  setenv("FRENCHPRESS_CRED_FILE",  jvm.cred_file,  1);
+    if (jvm.steam_user[0]) setenv("FRENCHPRESS_STEAM_USER", jvm.steam_user, 1);
+    if (jvm.steam_pass[0]) setenv("FRENCHPRESS_STEAM_PASS", jvm.steam_pass, 1);
+
     for (int i = 0; i < 50 && gfx.surface == EGL_NO_SURFACE; i++) {
         usleep(20 * 1000);
     }
@@ -470,6 +482,14 @@ static void *jvm_thread_main(void *arg) {
     snprintf(opt_prefs_user, sizeof opt_prefs_user, "-Djava.util.prefs.userRoot=%s/home/.userPrefs",   jvm.app_files);
     snprintf(opt_prefs_sys,  sizeof opt_prefs_sys,  "-Djava.util.prefs.systemRoot=%s/home/.systemPrefs", jvm.app_files);
 
+    // frenchpress Steam-login shim (optional): jar prepended to SK's classpath via
+    // SkBootstrap (-Dfrenchpress.jar) so its froth/SteamAPI classes shadow projectx's.
+    bool frenchpress = jvm.frenchpress_jar[0] != '\0';
+    char opt_fp_jar[1100];
+    if (frenchpress) {
+        snprintf(opt_fp_jar, sizeof opt_fp_jar, "-Dfrenchpress.jar=%s", jvm.frenchpress_jar);
+    }
+
     // caciocavallo AWT bridge (optional): non-headless toolkit so SK's cursor/
     // dialog/clipboard AWT calls work without X11. Enabled when cacio_dir is set.
     bool cacio = jvm.cacio_dir[0] != '\0';
@@ -509,7 +529,18 @@ static void *jvm_thread_main(void *arg) {
     ADD_OPT(opt_prefs_user);
     ADD_OPT(opt_prefs_sys);
     ADD_OPT("-Dorg.lwjgl.util.NoChecks=true");
+    // disable_steam_api is misleadingly named: it only stops froth-foamy from loading
+    // the native libsteam_api.so (which we never ship on Android) — froth still issues
+    // its Steam calls and falls back gracefully. Kept ALWAYS; frenchpress's shimmed
+    // SteamAPI.init() runs regardless and drives login via JavaSteam when creds are set.
     ADD_OPT("-Dcom.threerings.froth.disable_steam_api=true");
+    if (frenchpress) {
+        ADD_OPT(opt_fp_jar);
+        // Force the headless (env-var) credential prompt; otherwise frenchpress would
+        // pick SwingCredentialPrompt on the non-headless cacio AWT and render into an
+        // invisible buffer. With no FRENCHPRESS_STEAM_USER this yields a web account.
+        ADD_OPT("-Dfrenchpress.credentialPrompt=co.frenchpress.HeadlessEnvPrompt");
+    }
     ADD_OPT("-Dno_log_redir=true");
     ADD_OPT("-Dsilent=launch");
     ADD_OPT("--add-opens=java.base/java.lang=ALL-UNNAMED");
@@ -665,7 +696,9 @@ static void copy_arg(char *dst, size_t dst_sz, const char *src) {
 
 static void start_jvm_thread_once(const char *jre_home, const char *classpath,
                                   const char *lib_path, const char *app_files,
-                                  const char *cacio_dir) {
+                                  const char *cacio_dir, const char *frenchpress_jar,
+                                  const char *cred_file, const char *steam_user,
+                                  const char *steam_pass) {
     bool expected = false;
     if (!atomic_compare_exchange_strong(&jvm.started, &expected, true)) {
         LOGW("JVM thread already started");
@@ -676,6 +709,10 @@ static void start_jvm_thread_once(const char *jre_home, const char *classpath,
     copy_arg(jvm.lib_path,  sizeof(jvm.lib_path),  lib_path);
     copy_arg(jvm.app_files, sizeof(jvm.app_files), app_files);
     copy_arg(jvm.cacio_dir, sizeof(jvm.cacio_dir), cacio_dir);
+    copy_arg(jvm.frenchpress_jar, sizeof(jvm.frenchpress_jar), frenchpress_jar);
+    copy_arg(jvm.cred_file,  sizeof(jvm.cred_file),  cred_file);
+    copy_arg(jvm.steam_user, sizeof(jvm.steam_user), steam_user);
+    copy_arg(jvm.steam_pass, sizeof(jvm.steam_pass), steam_pass);
 
     int rc = pthread_create(&jvm.thread, NULL, jvm_thread_main, NULL);
     if (rc != 0) {
@@ -825,24 +862,37 @@ JNIEXPORT void JNICALL
 Java_com_skarm_launcher_NativeBridge_startJvm(JNIEnv *env, jobject thiz,
                                               jstring jreHome, jstring classpath,
                                               jstring libPath, jstring appFiles,
-                                              jstring cacioDir) {
+                                              jstring cacioDir, jstring frenchpressJar,
+                                              jstring credFile, jstring steamUser,
+                                              jstring steamPass) {
     const char *home = (*env)->GetStringUTFChars(env, jreHome,   NULL);
     const char *cp   = (*env)->GetStringUTFChars(env, classpath, NULL);
     const char *lp   = (*env)->GetStringUTFChars(env, libPath,   NULL);
     const char *af   = (*env)->GetStringUTFChars(env, appFiles,  NULL);
     const char *cd   = (*env)->GetStringUTFChars(env, cacioDir,  NULL);
+    const char *fj   = (*env)->GetStringUTFChars(env, frenchpressJar, NULL);
+    const char *cf   = (*env)->GetStringUTFChars(env, credFile,  NULL);
+    const char *su   = (*env)->GetStringUTFChars(env, steamUser, NULL);
+    const char *sp   = (*env)->GetStringUTFChars(env, steamPass, NULL);
     LOGI("startJvm requested");
-    LOGI("  jreHome   = %s", home);
-    LOGI("  classpath = %s", cp);
-    LOGI("  libPath   = %s", lp);
-    LOGI("  appFiles  = %s", af);
-    LOGI("  cacioDir  = %s", cd);
-    start_jvm_thread_once(home, cp, lp, af, cd);
+    LOGI("  jreHome     = %s", home);
+    LOGI("  classpath   = %s", cp);
+    LOGI("  libPath     = %s", lp);
+    LOGI("  appFiles    = %s", af);
+    LOGI("  cacioDir    = %s", cd);
+    LOGI("  frenchpress = %s", fj);
+    LOGI("  credFile    = %s", cf);
+    LOGI("  steamUser   = %s", su[0] ? "(set)" : "(none)");  // never log pass
+    start_jvm_thread_once(home, cp, lp, af, cd, fj, cf, su, sp);
     (*env)->ReleaseStringUTFChars(env, jreHome,   home);
     (*env)->ReleaseStringUTFChars(env, classpath, cp);
     (*env)->ReleaseStringUTFChars(env, libPath,   lp);
     (*env)->ReleaseStringUTFChars(env, appFiles,  af);
     (*env)->ReleaseStringUTFChars(env, cacioDir,  cd);
+    (*env)->ReleaseStringUTFChars(env, frenchpressJar, fj);
+    (*env)->ReleaseStringUTFChars(env, credFile,  cf);
+    (*env)->ReleaseStringUTFChars(env, steamUser, su);
+    (*env)->ReleaseStringUTFChars(env, steamPass, sp);
 }
 
 JNIEXPORT void JNICALL

@@ -9,3 +9,4 @@ app/src/main/jniLibs/*/*.so
 app/src/main/assets/lwjgl/*.zip
 app/src/main/assets/sk/sk-bootstrap.jar
 app/src/main/assets/cacio/*.jar
+app/src/main/assets/frenchpress/frenchpress.jar

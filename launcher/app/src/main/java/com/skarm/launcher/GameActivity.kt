@@ -33,6 +33,8 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var surface: SurfaceView
     private var jvmKicked = false
     private lateinit var loginMode: LauncherActivity.LoginMode
+    private var steamUser: String = ""
+    private var steamPass: String = ""
 
     private lateinit var inputManager: InputManager
     private val deviceListener = object : InputManager.InputDeviceListener {
@@ -69,10 +71,12 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 intent.getStringExtra(LauncherActivity.EXTRA_LOGIN_MODE).orEmpty()
             )
         }.getOrDefault(LauncherActivity.LoginMode.Web)
-        // TODO(frenchpress): Steam mode currently behaves identically to Web (normal
-        // account login) — the APK is local-only for now. Once frenchpress/Steam
-        // login is integrated, thread loginMode through to the SK bootstrap so Steam
-        // uses the Steam-linked credential path instead of the web login.
+        // Steam credentials, present only on a first Steam login (subsequent launches
+        // resume from frenchpress's stored refresh token). Empty in Web mode — which
+        // frenchpress reads as "web account" and falls through to normal web login.
+        // Threaded into the JVM as FRENCHPRESS_STEAM_USER/PASS env vars (sklauncher.c).
+        steamUser = intent.getStringExtra(LauncherActivity.EXTRA_STEAM_USER).orEmpty()
+        steamPass = intent.getStringExtra(LauncherActivity.EXTRA_STEAM_PASS).orEmpty()
     }
 
     /**
@@ -269,6 +273,23 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
             ).filter { it.isNotEmpty() }.joinToString(":")
             // Re-stage the cacio AWT bridge so a rebuilt jar always propagates.
             val cacioDir = CacioInstaller.stage(this).absolutePath
+            // Activate frenchpress (Steam-login shim) only in Steam mode. An explicit
+            // Play(Web) must do web login even if a Steam refresh token is stored on
+            // disk — and frenchpress's CredentialStore token has priority over the
+            // empty-username web fallback, so it would re-use the token if loaded. Not
+            // putting it on the classpath for Web sidesteps that, non-destructively
+            // (the token is preserved for the next Play(Steam)).
+            val steam = loginMode == LauncherActivity.LoginMode.Steam
+            val frenchpressJar: String
+            val credFile: String
+            if (steam) {
+                FrenchpressInstaller.stage(this)  // re-stage so a rebuilt jar propagates
+                frenchpressJar = FrenchpressInstaller.jar(this).absolutePath
+                credFile = FrenchpressInstaller.credFile(this).absolutePath
+            } else {
+                frenchpressJar = ""
+                credFile = ""
+            }
             // Writable HOME for the JVM (user.home + java.util.prefs roots, set in
             // sklauncher.c). Kept outside the getdown-managed sk/ tree so updates
             // never wipe persisted settings. Pre-create so FileSystemPreferences
@@ -287,6 +308,10 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 libPath = libPath,
                 appFiles = filesDir.absolutePath,
                 cacioDir = cacioDir,
+                frenchpressJar = frenchpressJar,
+                credFile = credFile,
+                steamUser = steamUser,
+                steamPass = steamPass,
             )
         }
     }
