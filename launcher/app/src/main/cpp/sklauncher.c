@@ -511,6 +511,7 @@ static void *jvm_thread_main(void *arg) {
     ADD_OPT("-Dorg.lwjgl.util.NoChecks=true");
     ADD_OPT("-Dcom.threerings.froth.disable_steam_api=true");
     ADD_OPT("-Dno_log_redir=true");
+    ADD_OPT("-Dsilent=launch");
     ADD_OPT("--add-opens=java.base/java.lang=ALL-UNNAMED");
     ADD_OPT("--add-opens=java.base/java.util=ALL-UNNAMED");
     ADD_OPT("--enable-native-access=ALL-UNNAMED");
