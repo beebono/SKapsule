@@ -46,4 +46,10 @@ stage "$REPO_ROOT/out/cacio/cacio-tta.jar" \
     echo "  (run ./scripts/build-cacio-android.sh first)"
 
 echo
+echo "=== frenchpress (froth-foamy/Steam) ==="
+stage "$REPO_ROOT/out/frenchpress/frenchpress.jar" \
+      "$LAUNCHER/assets/frenchpress/frenchpress.jar" || \
+    echo "  (run ./scripts/build-frenchpress-android.sh first)"
+
+echo
 echo "done."

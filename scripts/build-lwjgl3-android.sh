@@ -28,13 +28,6 @@ if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
 fi
 [[ -d "${ANDROID_NDK_HOME:-}" ]] || { echo "ERROR: set ANDROID_NDK_HOME" >&2; exit 1; }
 
-# LWJGL auto-detects the running JDK (via <detectJDKVersion/> in
-# config/build-definitions.xml) and sets the `jdk11` property whenever
-# Java >= 11. The release target then compiles a Java 8 base layer for
-# the multi-release jar, which uses `--boot-class-path "$JAVA8_HOME/jre/lib/rt.jar"`.
-# That path only exists in an actual JDK 8 (JDK 9+ removed rt.jar), so a
-# real JDK 8 is required even when the rest of the build runs on a newer
-# JDK. Point JAVA8_HOME at one (e.g. /usr/lib/jvm/java-8-openjdk-amd64).
 if [[ -z "${JAVA8_HOME:-}" || ! -f "${JAVA8_HOME:-}/jre/lib/rt.jar" ]]; then
     echo "ERROR: JAVA8_HOME must point at a JDK 8 install (with jre/lib/rt.jar)." >&2
     echo "       LWJGL's release target boot-classpaths against rt.jar to build" >&2
@@ -48,9 +41,6 @@ echo "Arch / ABI:        $ARCH / $ABI"
 echo "Output dir:        $OUT_DIR"
 echo
 
-# Drop the -Djdk25=true line from a working copy of ci_build_android.bash
-# without mutating the submodule. We run the patched script from inside
-# $LWJGL_SRC so its relative paths (bin/, libffi/, ...) still resolve.
 PATCHED="$LWJGL_SRC/ci_build_android.skarm.bash"
 trap 'rm -f "$PATCHED"' EXIT
 sed '/-Djdk25=true \\$/d' "$LWJGL_SRC/ci_build_android.bash" > "$PATCHED"
@@ -85,13 +75,12 @@ echo
 echo "=== packaging modules -> $MODULES_ZIP ==="
 [[ -d "$RELEASE_SRC" ]] || { echo "ERROR: $RELEASE_SRC missing (ant release did not run)" >&2; exit 1; }
 rm -f "$MODULES_ZIP"
-# Mirror the upstream zip layout: <module-dir>/<file>, no top-level prefix.
+
 ( cd "$RELEASE_SRC" && zip -r "$MODULES_ZIP" . \
     -i '*.jar' '*license*' 'LICENSE' 'build.txt' \
     -x '*-natives-*' '*-sources.jar' )
 
 echo
 echo "=== done ==="
+echo "Outputs:"
 ls -lh "$NATIVES_ZIP" "$MODULES_ZIP"
-echo
-echo "Next: ./scripts/stage-launcher-assets.sh   # copies into launcher assets/"

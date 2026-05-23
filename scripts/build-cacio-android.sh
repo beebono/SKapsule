@@ -59,4 +59,6 @@ for mod in cacio-shared cacio-tta; do
 done
 
 echo
-echo "done. cacio jars in $OUT_DIR/ (run ./scripts/stage-launcher-assets.sh next)"
+echo "=== done ==="
+echo "Outputs:"
+ls -lh "$OUT_DIR/cacio-shared.jar" "$OUT_DIR/cacio-tta.jar"

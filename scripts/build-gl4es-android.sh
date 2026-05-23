@@ -102,5 +102,5 @@ done
 echo "=== done ==="
 echo "Outputs:"
 for ABI in "${ABIS[@]}"; do
-    ls -l "$OUT_DIR/jniLibs/$ABI/libgl4es.so" 2>/dev/null || true
+    ls -lh "$OUT_DIR/jniLibs/$ABI/libgl4es.so" 2>/dev/null || true
 done
