@@ -203,11 +203,18 @@ static bool egl_make_current_on_caller_thread(void) {
         LOGE("eglMakeCurrent (caller thread) failed: %s", egl_err_str(eglGetError()));
         return false;
     }
-    LOGI("EGL current on tid=%ld; ctx=%p surface=%p",
-         (long)pthread_self(), gfx.context, gfx.surface);
-    LOGI("native GL_VERSION:  %s", glGetString(GL_VERSION));
-    LOGI("native GL_VENDOR:   %s", glGetString(GL_VENDOR));
-    LOGI("native GL_RENDERER: %s", glGetString(GL_RENDERER));
+    // SK calls glfwMakeContextCurrent several times at startup (and we bind twice per
+    // call around gl4es bring-up), so log the make-current banner + invariant GL identity
+    // only once. Multitask-resume re-binds are logged separately (render_thread_rebind_if_dirty).
+    static bool logged_once = false;
+    if (!logged_once) {
+        logged_once = true;
+        LOGI("EGL current on tid=%ld; ctx=%p surface=%p",
+             (long)pthread_self(), gfx.context, gfx.surface);
+        LOGI("native GL_VERSION:  %s", glGetString(GL_VERSION));
+        LOGI("native GL_VENDOR:   %s", glGetString(GL_VENDOR));
+        LOGI("native GL_RENDERER: %s", glGetString(GL_RENDERER));
+    }
     return true;
 }
 
@@ -287,11 +294,33 @@ typedef struct {
     const char *tag;
 } pump_arg_t;
 
+// Known-benign third-party noise dropped from sk-stdout/sk-stderr. We can't silence
+// these at the source (closed SK jar, binary getdown-pro.jar, the LWJGL fork's Pojav
+// hook), so we filter the redirect instead. Substring match; keep patterns specific so
+// real errors still get through. See docs/current-status CONFIRMED BENIGN LOG NOISE.
+static const char *const BENIGN_NOISE[] = {
+    "no pojavexec in java.library.path",            // LWJGL fork Pojav hook; load fails, MemoryUtil fine after
+    "Unable to parse VM version",                   // getdown regex rejects '25.0.3-internal', proceeds anyway
+    "Found joystick! [name=null]",                  // gamepad detected w/ null name; input works
+    "::staticFieldBase will be removed",            // cacio CTCPreloadAgent JDK25 deprecation warnings (4 lines)
+    "terminally deprecated method in sun.misc.Unsafe",
+    "CTCPreloadAgent",
+    "SLF4J",                                        // slf4j-api (via frenchpress/ktor) no-provider warning, NOPs
+};
+
+static bool line_is_benign(const char *line) {
+    for (size_t i = 0; i < sizeof BENIGN_NOISE / sizeof BENIGN_NOISE[0]; i++) {
+        if (strstr(line, BENIGN_NOISE[i])) return true;
+    }
+    return false;
+}
+
 static void *stdio_pump(void *arg) {
     pump_arg_t *p = (pump_arg_t *)arg;
     char line[2048];
     int line_len = 0;
     char buf[1024];
+    bool dropping_stack = false;   // swallow the pojavexec exception's trailing frames
     while (1) {
         ssize_t n = read(p->read_fd, buf, sizeof buf);
         if (n <= 0) break;
@@ -299,7 +328,18 @@ static void *stdio_pump(void *arg) {
             char c = buf[i];
             if (c == '\n' || line_len == (int)sizeof line - 1) {
                 line[line_len] = '\0';
-                if (line_len > 0) __android_log_write(p->level, p->tag, line);
+                if (line_len > 0) {
+                    if (line_is_benign(line)) {
+                        // Drop it; if it's the pojavexec error, also drop the indented
+                        // stack frames that follow (until the next non-frame line).
+                        dropping_stack = strstr(line, "no pojavexec") != NULL;
+                    } else if (dropping_stack && line[0] == '\t') {
+                        // skip "\tat ..." frame belonging to the suppressed benign error
+                    } else {
+                        dropping_stack = false;
+                        __android_log_write(p->level, p->tag, line);
+                    }
+                }
                 line_len = 0;
             } else if (c != '\r') {
                 line[line_len++] = c;
@@ -722,8 +762,12 @@ static void start_jvm_thread_once(const char *jre_home, const char *classpath,
 }
 
 static void JNICALL glfw_make_current_impl(JNIEnv *env, jclass thiz, jlong window) {
-    LOGI("glfwMakeContextCurrent on tid=%ld (window=0x%llx)",
-         (long)pthread_self(), (long long)(unsigned long long)window);
+    static bool logged_once = false;
+    if (!logged_once) {
+        logged_once = true;
+        LOGI("glfwMakeContextCurrent on tid=%ld (window=0x%llx)",
+             (long)pthread_self(), (long long)(unsigned long long)window);
+    }
     pthread_mutex_lock(&egl_lock);
     if (gfx.surface == EGL_NO_SURFACE) {
         LOGE("glfwMakeContextCurrent: no EGL surface yet");
