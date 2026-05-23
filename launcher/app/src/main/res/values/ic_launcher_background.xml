@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Softened SK Violet-Red, tuned to complement the icon's cyan. -->
+    <color name="ic_launcher_background">#AC4B82</color>
+</resources>

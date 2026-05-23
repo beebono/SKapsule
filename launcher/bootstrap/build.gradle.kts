@@ -14,8 +14,10 @@ java {
 
 dependencies {
     // compileOnly: the JVM that runs our bootstrap will have getdown-pro.jar
-    // on its classpath (we ship it as an asset and add it explicitly).
-    compileOnly(files("$rootDir/../refs/sk-desktop-linux-install/getdown-pro.jar"))
+    // on its classpath (we ship it as an asset and add it explicitly). Compile
+    // against the committed asset copy — same jar we run against, and unlike the
+    // gitignored refs/ tree it's present in a clean checkout (e.g. CI).
+    compileOnly(files("$rootDir/app/src/main/assets/sk/getdown-pro.jar"))
 
     // Compile-only against the AngelAuraMC Android LWJGL jars so we can write
     // GLFW shadows that satisfy SK's expectations.
