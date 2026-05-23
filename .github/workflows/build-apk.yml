@@ -32,7 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Must match launcher/app/build.gradle.kts ndkVersion + cmake version.
-      NDK_VERSION: "27.3.13750724"
+      # NDK 30 (Clang 20): NDK 27's Clang 18 miscompiles openal-soft's C++20 ranges.
+      NDK_VERSION: "30.0.14904198"
       CMAKE_VERSION: "3.22.1"
 
     steps:
