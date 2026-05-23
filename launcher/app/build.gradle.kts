@@ -1,7 +1,32 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// Release signing secrets, resolved from a gitignored launcher/keystore.properties
+// first, then environment variables (CI-friendly). If none are supplied the release
+// signingConfig is left unset and `assembleRelease` produces an unsigned APK — so the
+// project still builds for anyone without the key. See keystore.properties.template.
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signingSecret(propKey: String, envKey: String): String? =
+    keystoreProps.getProperty(propKey) ?: System.getenv(envKey)
+
+val ksStoreFile = signingSecret("storeFile", "SK_KEYSTORE_FILE")
+val ksStorePass = signingSecret("storePassword", "SK_KEYSTORE_PASSWORD")
+val ksKeyAlias  = signingSecret("keyAlias", "SK_KEY_ALIAS")
+val ksKeyPass   = signingSecret("keyPassword", "SK_KEY_PASSWORD")
+val hasReleaseSigning = ksStoreFile != null && ksStorePass != null &&
+    ksKeyAlias != null && ksKeyPass != null
+
+// versionCode must monotonically increase for over-the-top updates. Overridable for
+// CI/publish via the SK_VERSION_CODE env var (CI passes github.run_number); local dev
+// builds default to 1. versionName stays the human-facing release string.
+val skVersionCode = System.getenv("SK_VERSION_CODE")?.toIntOrNull() ?: 1
 
 android {
     namespace = "com.skarm.launcher"
@@ -12,8 +37,8 @@ android {
         applicationId = "com.skarm.launcher"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = skVersionCode
+        versionName = "1.0.0"
 
         ndk {
             // who even uses 32-bit
@@ -28,12 +53,26 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                // Relative paths resolve against launcher/ (rootProject); absolute paths pass through.
+                storeFile = rootProject.file(ksStoreFile!!)
+                storePassword = ksStorePass
+                keyAlias = ksKeyAlias
+                keyPassword = ksKeyPass
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
         }
         release {
             isMinifyEnabled = false
+            // Signed when a keystore is configured; otherwise emits app-release-unsigned.apk.
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

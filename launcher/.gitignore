@@ -10,3 +10,8 @@ app/src/main/assets/lwjgl/*.zip
 app/src/main/assets/sk/sk-bootstrap.jar
 app/src/main/assets/cacio/*.jar
 app/src/main/assets/frenchpress/frenchpress.jar
+
+# Release signing, keep it secret - keep it safe
+keystore.properties
+*.jks
+*.keystore

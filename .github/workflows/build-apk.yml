@@ -1,0 +1,136 @@
+name: Build APK
+
+# Full from-source build: compiles every native submodule (gl4es, openal, lwjgl3,
+# cacio, frenchpress), stages them, then assembles + signs the release APK.
+#
+# Signing is optional. To produce a *signed* app-release.apk, set these repo secrets
+# (Settings -> Secrets and variables -> Actions):
+#   KEYSTORE_BASE64    - `base64 -w0 sk-release.jks` (the whole keystore, base64)
+#   KEYSTORE_PASSWORD  - keystore password
+#   KEY_ALIAS          - key alias inside the keystore (e.g. sk)
+#   KEY_PASSWORD       - key password
+# With no secrets set, the build still succeeds and uploads app-release-unsigned.apk
+# (build.gradle.kts degrades gracefully). NOTE: GitHub secrets are write-only — they
+# are NOT a recoverable backup of your keystore. Keep your own copy of sk-release.jks.
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create a GitHub Release on version-tag pushes
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Must match launcher/app/build.gradle.kts ndkVersion + cmake version.
+      NDK_VERSION: "27.3.13750724"
+      CMAKE_VERSION: "3.22.1"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Three JDKs are needed: 8 for LWJGL's Java-8 multi-release layer (rt.jar),
+      # 21 for Gradle/AGP (JDK 25 breaks Gradle here), 25 for cacio + frenchpress
+      # (their poms compile --release 25). setup-java exports JAVA_HOME_<v>_X64 for each.
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '8' }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21', cache: gradle }
+      - uses: actions/setup-java@v4
+        with: { distribution: zulu, java-version: '25' }  # zulu 25 matches the dev box
+
+      - name: Install native build tools (ant for LWJGL, ninja/zip for the scripts)
+        run: sudo apt-get update && sudo apt-get install -y ant ninja-build zip
+
+      - name: Install matching NDK + CMake via sdkmanager
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          yes | "$SDKMANAGER" "ndk;${NDK_VERSION}" "cmake;${CMAKE_VERSION}" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      # Cache the heavy native outputs, keyed on the submodule commit set + the build
+      # scripts. On a hit we skip the whole native rebuild and just restore out/.
+      - name: Compute submodule cache key
+        id: submods
+        run: echo "sha=$(git submodule status --recursive | awk '{print $1}' | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache native build outputs
+        id: cache-out
+        uses: actions/cache@v4
+        with:
+          path: out
+          key: native-${{ runner.os }}-ndk${{ env.NDK_VERSION }}-${{ steps.submods.outputs.sha }}-${{ hashFiles('scripts/build-*.sh') }}
+
+      - name: Build native submodules (cache miss only)
+        if: steps.cache-out.outputs.cache-hit != 'true'
+        env:
+          JAVA8_HOME: ${{ env.JAVA_HOME_8_X64 }}
+          CACIO_JAVA_HOME: ${{ env.JAVA_HOME_25_X64 }}
+          FRENCHPRESS_JAVA_HOME: ${{ env.JAVA_HOME_25_X64 }}
+          JAVA_HOME: ${{ env.JAVA_HOME_25_X64 }}  # LWJGL ant build runs under 25 (matches dev box)
+        run: |
+          ./scripts/build-gl4es-android.sh
+          ./scripts/build-openal-android.sh
+          ./scripts/build-lwjgl3-android.sh
+          ./scripts/build-cacio-android.sh
+          ./scripts/build-frenchpress-android.sh
+
+      - name: Stage assets into the launcher
+        run: ./scripts/stage-launcher-assets.sh
+
+      # Decode the keystore from the secret if present; otherwise leave SK_KEYSTORE_FILE
+      # empty and the build produces an unsigned APK.
+      - name: Decode release keystore
+        id: keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/sk-release.jks"
+            echo "file=$RUNNER_TEMP/sk-release.jks" >> "$GITHUB_OUTPUT"
+            echo "Release keystore decoded; APK will be signed."
+          else
+            echo "No KEYSTORE_BASE64 secret set; APK will be UNSIGNED."
+          fi
+
+      - name: Assemble release APK
+        working-directory: launcher
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME_21_X64 }}   # Gradle needs JDK <= 21
+          SK_VERSION_CODE: ${{ github.run_number }} # monotonic; bumps versionCode per CI build
+          SK_KEYSTORE_FILE: ${{ steps.keystore.outputs.file }}
+          SK_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SK_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SK_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sk-launcher-release-apk
+          path: launcher/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      # Publish a GitHub Release with the signed APK attached — only on a version-tag
+      # push (refs/tags/v*) AND only when the build was actually signed (keystore secret
+      # present). A tag without secrets still uploads the workflow artifact above, but
+      # won't publish an unsigned APK as a public Release.
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') && steps.keystore.outputs.file != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          files: launcher/app/build/outputs/apk/release/app-release.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
