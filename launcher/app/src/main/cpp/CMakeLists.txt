@@ -16,3 +16,11 @@ target_link_libraries(sklauncher
     ${egl-lib}
     ${glesv2-lib}
 )
+
+add_executable(xdgopen xdgopen.c)
+
+set_target_properties(xdgopen PROPERTIES
+    PREFIX ""
+    SUFFIX ""
+    OUTPUT_NAME "libxdgopen.so"
+)

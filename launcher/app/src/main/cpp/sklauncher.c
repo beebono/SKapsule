@@ -63,6 +63,7 @@ static struct {
     char cred_file[1024];        // FRENCHPRESS_CRED_FILE (Steam refresh-token store)
     char steam_user[256];        // FRENCHPRESS_STEAM_USER (first login only); empty = web
     char steam_pass[256];        // FRENCHPRESS_STEAM_PASS
+    char bin_dir[1024];          // prepended to PATH so SK's Runtime.exec finds our xdg-open shim
 } jvm = { .started = ATOMIC_VAR_INIT(false) };
 
 // --- input event ring buffer --------------------------------------------------
@@ -586,6 +587,18 @@ static void *jvm_thread_main(void *arg) {
     if (jvm.steam_user[0]) setenv("FRENCHPRESS_STEAM_USER", jvm.steam_user, 1);
     if (jvm.steam_pass[0]) setenv("FRENCHPRESS_STEAM_PASS", jvm.steam_pass, 1);
 
+    // Prepend bin dir to PATH so SK's Runtime.exec() calls resolve what we expect.
+    if (jvm.bin_dir[0]) {
+        const char *old_path = getenv("PATH");
+        char new_path[2048];
+        if (old_path && old_path[0]) {
+            snprintf(new_path, sizeof new_path, "%s:%s", jvm.bin_dir, old_path);
+        } else {
+            snprintf(new_path, sizeof new_path, "%s", jvm.bin_dir);
+        }
+        setenv("PATH", new_path, 1);
+    }
+
     for (int i = 0; i < 50 && gfx.surface == EGL_NO_SURFACE; i++) {
         usleep(20 * 1000);
     }
@@ -867,7 +880,7 @@ static void start_jvm_thread_once(const char *jre_home, const char *classpath,
                                   const char *lib_path, const char *app_files,
                                   const char *cacio_dir, const char *frenchpress_jar,
                                   const char *cred_file, const char *steam_user,
-                                  const char *steam_pass) {
+                                  const char *steam_pass, const char *bin_dir) {
     bool expected = false;
     if (!atomic_compare_exchange_strong(&jvm.started, &expected, true)) {
         LOGW("JVM thread already started");
@@ -882,6 +895,7 @@ static void start_jvm_thread_once(const char *jre_home, const char *classpath,
     copy_arg(jvm.cred_file,  sizeof(jvm.cred_file),  cred_file);
     copy_arg(jvm.steam_user, sizeof(jvm.steam_user), steam_user);
     copy_arg(jvm.steam_pass, sizeof(jvm.steam_pass), steam_pass);
+    copy_arg(jvm.bin_dir,    sizeof(jvm.bin_dir),    bin_dir);
 
     int rc = pthread_create(&jvm.thread, NULL, jvm_thread_main, NULL);
     if (rc != 0) {
@@ -1049,7 +1063,7 @@ Java_com_skarm_launcher_NativeBridge_startJvm(JNIEnv *env, jobject thiz,
                                               jstring libPath, jstring appFiles,
                                               jstring cacioDir, jstring frenchpressJar,
                                               jstring credFile, jstring steamUser,
-                                              jstring steamPass) {
+                                              jstring steamPass, jstring binDir) {
     const char *home = (*env)->GetStringUTFChars(env, jreHome,   NULL);
     const char *cp   = (*env)->GetStringUTFChars(env, classpath, NULL);
     const char *lp   = (*env)->GetStringUTFChars(env, libPath,   NULL);
@@ -1059,6 +1073,7 @@ Java_com_skarm_launcher_NativeBridge_startJvm(JNIEnv *env, jobject thiz,
     const char *cf   = (*env)->GetStringUTFChars(env, credFile,  NULL);
     const char *su   = (*env)->GetStringUTFChars(env, steamUser, NULL);
     const char *sp   = (*env)->GetStringUTFChars(env, steamPass, NULL);
+    const char *bd   = (*env)->GetStringUTFChars(env, binDir,    NULL);
     LOGI("startJvm requested");
     LOGI("  jreHome     = %s", home);
     LOGI("  classpath   = %s", cp);
@@ -1068,7 +1083,8 @@ Java_com_skarm_launcher_NativeBridge_startJvm(JNIEnv *env, jobject thiz,
     LOGI("  frenchpress = %s", fj);
     LOGI("  credFile    = %s", cf);
     LOGI("  steamUser   = %s", su[0] ? "(set)" : "(none)");  // never log pass
-    start_jvm_thread_once(home, cp, lp, af, cd, fj, cf, su, sp);
+    LOGI("  binDir      = %s", bd);
+    start_jvm_thread_once(home, cp, lp, af, cd, fj, cf, su, sp, bd);
     (*env)->ReleaseStringUTFChars(env, jreHome,   home);
     (*env)->ReleaseStringUTFChars(env, classpath, cp);
     (*env)->ReleaseStringUTFChars(env, libPath,   lp);
@@ -1078,6 +1094,7 @@ Java_com_skarm_launcher_NativeBridge_startJvm(JNIEnv *env, jobject thiz,
     (*env)->ReleaseStringUTFChars(env, credFile,  cf);
     (*env)->ReleaseStringUTFChars(env, steamUser, su);
     (*env)->ReleaseStringUTFChars(env, steamPass, sp);
+    (*env)->ReleaseStringUTFChars(env, binDir,    bd);
 }
 
 JNIEXPORT void JNICALL

@@ -2,9 +2,15 @@ package com.skarm.launcher
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.hardware.input.InputManager
+import android.net.LocalServerSocket
+import android.net.Uri
 import android.os.Bundle
 import android.os.Process
+import android.os.SystemClock
+import android.system.Os
 import android.text.InputType
 import android.util.Log
 import android.view.InputDevice
@@ -16,6 +22,7 @@ import android.view.View
 import android.view.animation.AccelerateInterpolator
 import android.view.WindowManager
 import android.widget.EditText
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -24,6 +31,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.skarm.launcher.databinding.ActivityGameBinding
 import java.io.File
+import java.io.IOException
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -43,6 +51,18 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
     private var steamPass: String = ""
     private var dismissing = false
     private var guardDialog: AlertDialog? = null
+
+    // xdg-open shim: PATH dir handed to the JVM, and the socket SK's link clicks
+    // are relayed over. See setupUrlOpener().
+    private var binDir: String = ""
+    private var urlServer: LocalServerSocket? = null
+
+    // Tap-to-confirm for opening links: the first tap of a URL only shows a
+    // prompt; a second tap of the same URL within the window actually opens it,
+    // so an accidental tap (esp. once on-screen controls exist) can't yank the
+    // user out to the browser. See openUrl()/shouldOpenNow().
+    private var pendingUrl: String? = null
+    private var pendingAtMs: Long = 0L
 
     private lateinit var inputManager: InputManager
     private val deviceListener = object : InputManager.InputDeviceListener {
@@ -78,6 +98,10 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
         refreshGamepadPresence()
 
         binding.btnKeyboard.setOnClickListener { toggleSoftKeyboard() }
+
+        // Make SK's News/wiki/forum links open the system browser. Done before
+        // startJvm (in surfaceChanged) so binDir is ready to thread into PATH.
+        binDir = setupUrlOpener()
 
         // Android Back must go through the exit-confirm dialog, not silently finish
         // the activity (which would strand the JVM + audio in the :game process).
@@ -283,6 +307,85 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
         }
     }
 
+    /**
+     * Wires up the xdg-open shim so SK's News/wiki/forum links reach the system
+     * browser. SK is a desktop game and execs "xdg-open <url>", which Android
+     * lacks — so we drop a symlink named `xdg-open` (pointing at the packaged
+     * libxdgopen.so executable) into a bin dir we put on the JVM's PATH, and the
+     * shim relays each URL over a local socket back here. Returns the bin dir to
+     * prepend to PATH, or "" if setup fails (links then no-op, as before).
+     */
+    private fun setupUrlOpener(): String = try {
+        val dir = File(filesDir, "bin").apply { mkdirs() }
+        val link = File(dir, "xdg-open")
+        // nativeLibraryDir path changes across app updates, so recreate the link.
+        link.delete()
+        Os.symlink(File(applicationInfo.nativeLibraryDir, "libxdgopen.so").absolutePath,
+                   link.absolutePath)
+        startUrlServer()
+        dir.absolutePath
+    } catch (t: Throwable) {
+        Log.e(TAG, "xdg-open shim setup failed; links will no-op", t)
+        ""
+    }
+
+    /**
+     * Accepts URL relays from the xdg-open shim on a daemon thread. Each
+     * connection carries one newline-terminated URL; the socket lives in the
+     * abstract namespace (same-uid only). Closed in onDestroy, which makes
+     * accept() throw and ends the loop.
+     */
+    private fun startUrlServer() {
+        val server = LocalServerSocket(URL_SOCKET_NAME)
+        urlServer = server
+        Thread({
+            while (true) {
+                val client = try { server.accept() } catch (e: IOException) { break }
+                try {
+                    val url = client.inputStream.bufferedReader().readLine()?.trim().orEmpty()
+                    if (url.isNotEmpty()) openUrl(url)
+                } catch (e: IOException) {
+                    Log.w(TAG, "xdg-open relay read failed", e)
+                } finally {
+                    runCatching { client.close() }
+                }
+            }
+        }, "xdg-open-server").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Opens a URL relayed from the xdg-open shim after second tap confirms.
+     */
+    private fun openUrl(url: String) {
+        runOnUiThread {
+            val uri = Uri.parse(url)
+            val uriScheme = uri.scheme?.lowercase()
+            if (uriScheme != "http" && uriScheme != "https") {
+                Log.w(TAG, "unexpected uri scheme (expected http or https)")
+                return@runOnUiThread
+            }
+            if (shouldOpenNow(url)) {
+                pendingUrl = null
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, uri))
+                } catch (e: ActivityNotFoundException) {
+                    Log.i(TAG, "no browser available to open uri")
+                }
+            } else {
+                // First tap (or window elapsed): arm the confirm and prompt.
+                pendingUrl = url
+                pendingAtMs = SystemClock.uptimeMillis()
+                Toast.makeText(this, getString(R.string.url_confirm, url), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /**
+     * Only open a URL when the same URL was tapped twice within ~3s
+     */
+    private fun shouldOpenNow(url: String): Boolean =
+        url == pendingUrl && SystemClock.uptimeMillis() - pendingAtMs < URL_CONFIRM_WINDOW_MS
+
     // --- SurfaceHolder.Callback ---
     override fun surfaceCreated(holder: SurfaceHolder) {
         NativeBridge.onSurfaceCreated(holder.surface)
@@ -348,6 +451,7 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
                 credFile = credFile,
                 steamUser = steamUser,
                 steamPass = steamPass,
+                binDir = binDir,
             )
         }
     }
@@ -360,6 +464,8 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
         if (::inputManager.isInitialized) {
             inputManager.unregisterInputDeviceListener(deviceListener)
         }
+        runCatching { urlServer?.close() }
+        urlServer = null
         NativeBridge.setBootListener(null)
         NativeBridge.setCredentialListener(null)
         // Unblock any login thread parked on a dialog we're about to drop.
@@ -482,6 +588,14 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
     private companion object {
         const val TAG = "GameActivity"
+
+        // Abstract-namespace socket the xdg-open shim relays URLs over. Must match
+        // SOCK_NAME in cpp/xdgopen.c byte-for-byte.
+        const val URL_SOCKET_NAME = "com.skarm.launcher.xdgopen"
+
+        // How long the "tap again to open" confirmation stays armed, roughly the
+        // lifetime of the Toast prompt.
+        const val URL_CONFIRM_WINDOW_MS = 3000L
 
         // Mirrors the action codes in NativeBridge.onTouchEvent / sklauncher.c
         const val TOUCH_DOWN = 0

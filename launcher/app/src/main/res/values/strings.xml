@@ -22,4 +22,5 @@
     <string name="steam_guard_device_retry">That code was incorrect. Enter the current Steam Guard code from your authenticator app.</string>
     <string name="steam_guard_email_message">Enter the Steam Guard code sent to %1$s.</string>
     <string name="steam_guard_email_retry">That code was incorrect. Enter the new Steam Guard code sent to %1$s.</string>
+    <string name="url_confirm">Tap again to open %1$s</string>
 </resources>

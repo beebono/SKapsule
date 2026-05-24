@@ -27,6 +27,8 @@ object NativeBridge {
      * @param credFile path to frenchpress's Steam refresh-token store (FRENCHPRESS_CRED_FILE).
      * @param steamUser,steamPass Steam credentials for a first login (env vars). Empty = web
      *   login (frenchpress treats an empty username as a web account).
+     * @param binDir directory prepended to the JVM's PATH; holds the xdg-open shim symlink so
+     *   SK's Runtime.exec("xdg-open <url>") resolves to it. Empty to leave PATH untouched.
      */
     external fun startJvm(
         jreHome: String,
@@ -38,6 +40,7 @@ object NativeBridge {
         credFile: String,
         steamUser: String,
         steamPass: String,
+        binDir: String,
     )
 
     /** Launches Spiral Knights inside the running JVM. (Stub) */
