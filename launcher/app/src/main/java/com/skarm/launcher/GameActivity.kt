@@ -21,6 +21,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.skarm.launcher.databinding.ActivityGameBinding
 import java.io.File
 import kotlin.math.abs
@@ -53,6 +54,9 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        enableImmersiveMode()
 
         binding = ActivityGameBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -92,6 +96,23 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
         // Threaded into the JVM as FRENCHPRESS_STEAM_USER/PASS env vars (sklauncher.c).
         steamUser = intent.getStringExtra(LauncherActivity.EXTRA_STEAM_USER).orEmpty()
         steamPass = intent.getStringExtra(LauncherActivity.EXTRA_STEAM_PASS).orEmpty()
+    }
+
+    /**
+     * Re-assert immersive mode on coming back into focus.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enableImmersiveMode()
+    }
+
+    /**
+     * Hides the status + navigation bars until a swipe shows them temporarily.
+     */
+    private fun enableImmersiveMode() {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.systemBars())
     }
 
     /**
