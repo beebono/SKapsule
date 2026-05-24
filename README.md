@@ -69,7 +69,6 @@ for the canonical, reproducible recipe.
 | Android NDK | `30.0.14904198` | native libs (Clang 20; NDK 27's Clang 18 miscompiles OpenAL's C++20 ranges) |
 | CMake | `3.22.1` | native build |
 | JDK 8 | | LWJGL's Java-8 multi-release layer |
-| JDK 21 | | Gradle / AGP (JDK 25 breaks Gradle here) |
 | JDK 25 | | caciocavallo + frenchpress (`--release 25`) |
 | ant, ninja, zip | | submodule build scripts |
 
@@ -104,7 +103,7 @@ These compile each submodule for `arm64-v8a` and drop outputs into `out/`:
 
 ```bash
 cd launcher
-JAVA_HOME=/path/to/jdk-21 ./gradlew :app:assembleRelease
+JAVA_HOME=/path/to/jdk-25 ./gradlew :app:assembleRelease
 ```
 
 The output lands in `launcher/app/build/outputs/apk/release/`. Without signing
@@ -193,8 +192,9 @@ shoulders this port stands on:
 - [clyde](https://github.com/threerings/clyde) — Three Rings' game tooling/runtime
   library used by the Spiral Knights client.
 - [Amethyst-Android](https://github.com/AngelAuraMC/Amethyst-Android) /
-  [KnightLauncher-Android](https://github.com/AngelAuraMC) — related Android Java-game
-  launchers that informed the JVM-on-Android approach (gl4es, LWJGL, cacio bridge).
+  [KnightLauncher-Android](https://github.com/SirDank/KnightLauncher-Android) — related
+  Android Java-game launchers that informed the JVM-on-Android approach (gl4es, LWJGL,
+  cacio bridge).
 - The Spiral Knights desktop Linux install layout — reference for the appdir/getdown
   layout SKapsule reproduces on-device.
 

@@ -9,8 +9,8 @@
 #
 # IMPORTANT: the java-25 branch resolves JDK-internal APIs against the building
 # JDK (maven-compiler uses -XDignore.symbol.file=true), so it MUST be built with
-# a JDK 25 to match the FCL-Team JRE 25 we ship. Gradle's JDK-21 pin does not
-# apply here. Override the build JDK with CACIO_JAVA_HOME if needed.
+# a JDK 25 to match the FCL-Team JRE 25 we ship. Override the build JDK
+# with CACIO_JAVA_HOME if needed.
 
 set -euo pipefail
 

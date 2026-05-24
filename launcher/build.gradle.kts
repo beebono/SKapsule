@@ -1,4 +1,5 @@
 plugins {
-    id("com.android.application") version "8.7.3" apply false
-    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+    // Kotlin is provided by AGP 9's built-in Kotlin support (KGP pinned by AGP),
+    // so we no longer apply org.jetbrains.kotlin.android ourselves.
+    id("com.android.application") version "9.2.0" apply false
 }

@@ -8,8 +8,8 @@
 # staged onto SK's classpath by stage-launcher-assets.sh.
 #
 # IMPORTANT: the pom sets maven.compiler.release=25, so it MUST be built with a JDK 25
-# to match the JRE 25 we ship. Gradle's JDK-21 pin does not apply here. Override the
-# build JDK with FRENCHPRESS_JAVA_HOME if needed.
+# to match the JRE 25 we ship. Override the build JDK with FRENCHPRESS_JAVA_HOME
+# if needed.
 
 set -euo pipefail
 

@@ -6,17 +6,10 @@ plugins {
 java {
     toolchain {
         // Match the FCL JRE 25 target. This is JVM, not ART.
-        languageVersion.set(JavaLanguageVersion.of(21))
+        languageVersion.set(JavaLanguageVersion.of(25))
     }
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-}
-
-// Compile-only API stubs for the frenchpress types NativeBridgePrompt links
-// against (the real jar is Java 25 / class v69, unreadable by this JDK 21
-// compiler). Built into their own source set so they never enter sk-bootstrap.jar.
-sourceSets {
-    create("stubs")
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 dependencies {
@@ -26,14 +19,14 @@ dependencies {
     // gitignored refs/ tree it's present in a clean checkout (e.g. CI).
     compileOnly(files("$rootDir/app/src/main/assets/sk/getdown-pro.jar"))
 
-    // NativeBridgePrompt implements co.frenchpress.CredentialPrompt, but the
-    // shaded frenchpress.jar is compiled for Java 25 (class v69) and this module
-    // uses a JDK 21 compiler (v65) which can't read it. Java linkage is nominal,
-    // so we compile against release-21 API STUBS of those two types (in
-    // src/stubs); at runtime NativeBridgePrompt binds to the real classes on
-    // SK's classloader. The stubs are compileOnly and excluded from the jar
-    // (see the jar task) so they can't shadow the real frenchpress.
-    compileOnly(sourceSets["stubs"].output)
+    // NativeBridgePrompt implements co.frenchpress.CredentialPrompt. Now that this
+    // module compiles under JDK 25 it can read the real shaded frenchpress.jar
+    // (class v69) directly, so the old release-21 API stubs are gone. Compile
+    // against the committed asset copy — same jar we ship and run against, present
+    // in a clean checkout (CI) — mirroring the getdown-pro.jar wiring above. Keep it
+    // compileOnly: at runtime NativeBridgePrompt binds to frenchpress on SK's
+    // classloader, and frenchpress classes must never enter sk-bootstrap.jar.
+    compileOnly(files("$rootDir/app/src/main/assets/frenchpress/frenchpress.jar"))
 
     // Compile-only against the AngelAuraMC Android LWJGL jars so we can write
     // GLFW shadows that satisfy SK's expectations.

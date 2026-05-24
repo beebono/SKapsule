@@ -1,8 +1,8 @@
 import java.util.Properties
 
 plugins {
+    // AGP 9 built-in Kotlin: no separate org.jetbrains.kotlin.android plugin.
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // Release signing secrets, resolved from a gitignored launcher/keystore.properties
@@ -89,9 +89,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    // Kotlin jvmTarget defaults to compileOptions.targetCompatibility (17) under
+    // AGP built-in Kotlin, so no explicit kotlinOptions block is needed.
 
     buildFeatures {
         viewBinding = true
