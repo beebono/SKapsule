@@ -77,6 +77,88 @@ public final class HeadlessGetdown extends Getdown {
         System.out.println("[HeadlessGetdown] showDocument suppressed: " + url);
     }
 
+    /**
+     * Our own copy of getdown's message bundle. getdown's inherited _msgs is loaded
+     * lazily during its UI init, so early-phase keys (e.g. "m.detecting_proxy",
+     * fired during proxy detection before _msgs exists) would otherwise forward
+     * untranslated. Loading it ourselves removes that timing dependency — it's the
+     * same bundle, resolved by our classloader (getdown-pro.jar is on our classpath).
+     */
+    private static final java.util.ResourceBundle MSGS = loadMsgs();
+
+    private static java.util.ResourceBundle loadMsgs() {
+        try {
+            return java.util.ResourceBundle.getBundle("com.threerings.getdown.messages");
+        } catch (Throwable t) {
+            System.err.println("[HeadlessGetdown] could not load message bundle: " + t);
+            return null;
+        }
+    }
+
+    /** Last translated status text, so progress-only ticks (null message) keep context. */
+    private volatile String lastText;
+
+    /** Last text actually forwarded, to coalesce getdown's many same-value ticks. */
+    private volatile String lastForwarded;
+
+    /**
+     * getdown's async status entry point. In silent mode (-Dsilent=launch) the
+     * superclass DROPS these before they reach updateStatus, so we tap them here —
+     * above the gate — to feed the Android boot overlay regardless of silent. This
+     * path also carries percent, which updateStatus lacks. We don't call super: the
+     * Swing UI it would drive is stubbed out anyway.
+     */
+    @Override
+    protected void setStatusAsync(String message, int percent, long remaining, boolean createUI) {
+        forwardStatus(message, percent);
+    }
+
+    /**
+     * getdown's StatusDisplay hook — direct status sink, used by a few paths that
+     * bypass setStatusAsync (e.g. proxy detection). No percent here.
+     */
+    @Override
+    public void updateStatus(String message) {
+        forwardStatus(message, -1);
+    }
+
+    /**
+     * Translate a getdown message KEY ("m.validating", …) to human text via our own
+     * copy of the bundle, append percent if present, and forward to the Android boot
+     * overlay via native. A null/empty message reuses the last text (progress-only
+     * tick). Best-effort: never let overlay plumbing derail the actual update.
+     */
+    private void forwardStatus(String message, int percent) {
+        String text;
+        if (message != null && !message.isEmpty()) {
+            try {
+                text = (MSGS != null) ? MSGS.getString(message) : message;
+            } catch (java.util.MissingResourceException e) {
+                text = message; // already plain text, not a key
+            }
+            lastText = text;
+        } else {
+            text = lastText; // progress-only tick; keep the current phase text
+        }
+        if (text == null) return; // nothing meaningful to show yet
+        if (percent >= 0) text = text + "  " + percent + "%";
+
+        // Coalesce: getdown fires the same value many times per second (e.g. tens of
+        // thousands of "Validating 90%"). Forwarding only on change spares the
+        // cross-VM JNI round-trip and the overlay's redundant UI updates.
+        if (text.equals(lastForwarded)) return;
+        lastForwarded = text;
+
+        // Visible in logcat (sk-stdout) so the full status sequence can be inspected.
+        System.out.println("[HeadlessGetdown] status: key=" + message
+            + " pct=" + percent + " -> " + text);
+        try {
+            SkBootstrap.nativeLaunchStatus(text);
+        } catch (Throwable t) {
+            // boot overlay is best-effort; never let it break getdown
+        }
+    }
+
     @Override
     public BufferedImage loadImage(String path) {
         return null;

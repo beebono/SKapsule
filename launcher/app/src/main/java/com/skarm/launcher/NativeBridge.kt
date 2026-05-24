@@ -64,4 +64,98 @@ object NativeBridge {
 
     /** A typed character (Unicode codepoint) for text entry. */
     external fun onCharInput(codepoint: Int)
+
+    // --- JVM/native -> Android boot-overlay callbacks --------------------------
+    // Invoked FROM native (cached JavaVM -> FindClass NativeBridge -> static call),
+    // not from Kotlin. The bootstrap jar and frenchpress run in SK's classloader
+    // (parent = platform classloader) and can't see app classes, so getdown
+    // progress and Steam-auth status reach the Activity through native, which
+    // fans out to whichever Activity registered as the listener.
+
+    /** Implemented by GameActivity to receive boot-phase status on the UI thread. */
+    interface BootListener {
+        fun onLaunchStatus(message: String)
+        fun onRenderReady()
+    }
+
+    @Volatile
+    private var bootListener: BootListener? = null
+
+    fun setBootListener(listener: BootListener?) { bootListener = listener }
+
+    /** Native -> a human-readable boot-phase status (getdown %, "Waiting for Steam…"). */
+    @JvmStatic
+    fun onLaunchStatus(message: String) {
+        bootListener?.onLaunchStatus(message)
+    }
+
+    /** Native -> SK has produced its first frame; the overlay can be dismissed. */
+    @JvmStatic
+    fun onRenderReady() {
+        bootListener?.onRenderReady()
+    }
+
+    // --- JVM/native -> Android Steam Guard (2FA) prompt ------------------------
+    // Unlike the boot-overlay callbacks above (fire-and-forget), these are a
+    // BLOCKING request/response: frenchpress's login thread (a HotSpot thread
+    // attached to ART) calls promptForDeviceCode/promptForEmailCode and parks
+    // until the user submits a code, which is handed back across `codeExchange`.
+    //
+    // JavaSteam only ever reaches these when no Steam-Mobile-App push approval
+    // is available, so a code is mandatory and blocking here is correct — push
+    // accounts log in silently and never trigger a prompt. See the 120s login
+    // timeout in SteamSession.attempt() as the ultimate backstop.
+
+    /** Implemented by GameActivity to surface the Steam Guard dialog on the UI thread. */
+    interface CredentialListener {
+        /** Ask for a Steam Guard authenticator (TOTP) code. */
+        fun onPromptDeviceCode(prevWrong: Boolean)
+        /** Ask for a Steam Guard email code sent to [email]. */
+        fun onPromptEmailCode(email: String, prevWrong: Boolean)
+        /** The auth attempt ended (success/fail/timeout); tear down any open dialog. */
+        fun onPromptDismiss()
+    }
+
+    @Volatile
+    private var credentialListener: CredentialListener? = null
+
+    fun setCredentialListener(listener: CredentialListener?) { credentialListener = listener }
+
+    // Single-slot rendezvous between the blocked login thread (taker) and the UI
+    // thread (offerer). SynchronousQueue means a late submission with no waiter
+    // simply no-ops rather than leaking a stale code into the next prompt.
+    private val codeExchange = java.util.concurrent.SynchronousQueue<String>()
+
+    /**
+     * Native (login thread) -> request a device code and BLOCK until the user
+     * submits one. Returns the code, or "" if no UI is registered (login then
+     * fails fast rather than hanging) or the wait is interrupted.
+     */
+    @JvmStatic
+    fun promptForDeviceCode(prevWrong: Boolean): String {
+        val listener = credentialListener ?: return ""
+        listener.onPromptDeviceCode(prevWrong)
+        return awaitCode()
+    }
+
+    /** Native (login thread) -> request an email code and BLOCK. See {@link #promptForDeviceCode}. */
+    @JvmStatic
+    fun promptForEmailCode(email: String, prevWrong: Boolean): String {
+        val listener = credentialListener ?: return ""
+        listener.onPromptEmailCode(email, prevWrong)
+        return awaitCode()
+    }
+
+    private fun awaitCode(): String = try {
+        codeExchange.take()
+    } catch (ie: InterruptedException) {
+        Thread.currentThread().interrupt()
+        ""
+    }
+
+    /**
+     * UI thread -> hand the user's entered code (or "" to fall through/cancel)
+     * to the parked login thread. No-ops if nothing is waiting.
+     */
+    fun submitCode(code: String) { codeExchange.offer(code) }
 }

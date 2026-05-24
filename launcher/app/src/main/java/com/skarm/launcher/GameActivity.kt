@@ -5,13 +5,17 @@ import android.app.AlertDialog
 import android.hardware.input.InputManager
 import android.os.Bundle
 import android.os.Process
+import android.text.InputType
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
+import android.view.animation.AccelerateInterpolator
 import android.view.WindowManager
+import android.widget.EditText
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -27,7 +31,8 @@ import kotlin.math.max
  * created on. Hosts SK via the embedded JRE 25; rendering is routed through
  * libgl4es.so. Single visible UI element is a small "Exit" button.
  */
-class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
+class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
+    NativeBridge.BootListener, NativeBridge.CredentialListener {
 
     private lateinit var binding: ActivityGameBinding
     private lateinit var surface: SurfaceView
@@ -35,6 +40,8 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var loginMode: LauncherActivity.LoginMode
     private var steamUser: String = ""
     private var steamPass: String = ""
+    private var dismissing = false
+    private var guardDialog: AlertDialog? = null
 
     private lateinit var inputManager: InputManager
     private val deviceListener = object : InputManager.InputDeviceListener {
@@ -53,6 +60,14 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
         surface = binding.gameSurface
         surface.holder.addCallback(this)
         wireTouchInput()
+
+        // Receive boot-phase status (getdown progress, Steam auth) routed from the
+        // JVM via native. The overlay is visible by default (covers the black gap)
+        // and shows "Starting Java runtime…" until the first status arrives.
+        NativeBridge.setBootListener(this)
+        // Steam Guard (2FA) prompts route here too; the dialog blocks frenchpress's
+        // login thread until a code is submitted (or "" on cancel).
+        NativeBridge.setCredentialListener(this)
 
         inputManager = getSystemService(INPUT_SERVICE) as InputManager
         inputManager.registerInputDeviceListener(deviceListener, null)
@@ -324,7 +339,124 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback {
         if (::inputManager.isInitialized) {
             inputManager.unregisterInputDeviceListener(deviceListener)
         }
+        NativeBridge.setBootListener(null)
+        NativeBridge.setCredentialListener(null)
+        // Unblock any login thread parked on a dialog we're about to drop.
+        NativeBridge.submitCode("")
+        guardDialog?.dismiss()
+        guardDialog = null
         super.onDestroy()
+    }
+
+    // --- NativeBridge.BootListener (called from a JVM/native thread) ---
+
+    /**
+     * A boot-phase status update (getdown progress, "Waiting for Steam…"). Arrives
+     * off the UI thread, so it's marshalled onto it before touching views. Ignored
+     * once the overlay has been dismissed, so a late log line can't resurrect it.
+     */
+    override fun onLaunchStatus(message: String) {
+        runOnUiThread {
+            if (binding.bootOverlay.visibility == View.VISIBLE) {
+                binding.bootStatus.text = message
+            }
+        }
+    }
+
+    /**
+     * SK produced its first frame: dismiss the boot overlay so the game shows
+     * through. Marshalled onto the UI thread.
+     */
+    override fun onRenderReady() {
+        runOnUiThread {
+            // Slide overlay out to left and mark GONE when done to prevent touch stealing.
+            if (dismissing || binding.bootOverlay.visibility != View.VISIBLE) return@runOnUiThread
+            dismissing = true
+            binding.bootOverlay.animate()
+                               .translationX(-binding.bootOverlay.width.toFloat())
+                               .setDuration(resources.getInteger(android.R.integer.config_mediumAnimTime).toLong())
+                               .withEndAction{ binding.bootOverlay.visibility = View.GONE }
+        }
+    }
+
+    // --- NativeBridge.CredentialListener (called from the JVM login thread) ---
+
+    /**
+     * Steam needs a typed authenticator (TOTP) code — reached only when no Steam
+     * Mobile App push approval is available, so a code is mandatory here. The
+     * login thread is parked in NativeBridge.promptForDeviceCode; we collect the
+     * code and hand it back via submitCode(). Marshalled onto the UI thread.
+     */
+    override fun onPromptDeviceCode(prevWrong: Boolean) {
+        runOnUiThread {
+            showGuardDialog(
+                title = getString(R.string.steam_guard_title),
+                message = getString(
+                    if (prevWrong) R.string.steam_guard_device_retry
+                    else R.string.steam_guard_device_message
+                ),
+                numeric = true,
+            )
+        }
+    }
+
+    /** Steam needs an email Steam Guard code sent to [email]. See {@link #onPromptDeviceCode}. */
+    override fun onPromptEmailCode(email: String, prevWrong: Boolean) {
+        runOnUiThread {
+            showGuardDialog(
+                title = getString(R.string.steam_guard_title),
+                message = getString(
+                    if (prevWrong) R.string.steam_guard_email_retry
+                    else R.string.steam_guard_email_message, email
+                ),
+                numeric = false, // email codes are alphanumeric
+            )
+        }
+    }
+
+    /** Auth finished (any outcome) — drop a lingering dialog and release the latch. */
+    override fun onPromptDismiss() {
+        runOnUiThread {
+            guardDialog?.dismiss()
+            guardDialog = null
+        }
+    }
+
+    /**
+     * Builds the single-field Steam Guard dialog. Both OK and cancel/back MUST
+     * reach submitCode() exactly once so the parked login thread never hangs:
+     * OK submits the trimmed code, cancel submits "" (login then fails fast
+     * rather than waiting out the 120s timeout). Replaces any prior dialog so a
+     * retry prompt doesn't stack.
+     */
+    private fun showGuardDialog(title: String, message: String, numeric: Boolean) {
+        guardDialog?.dismiss()
+        val input = EditText(this).apply {
+            inputType = if (numeric) {
+                InputType.TYPE_CLASS_NUMBER
+            } else {
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            }
+            hint = getString(R.string.steam_guard_hint)
+        }
+        guardDialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(message)
+            .setView(input)
+            .setCancelable(true)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                NativeBridge.submitCode(input.text.toString().trim())
+                guardDialog = null
+            }
+            .setNegativeButton(android.R.string.cancel) { _, _ ->
+                NativeBridge.submitCode("")
+                guardDialog = null
+            }
+            .setOnCancelListener { // back button / tap-outside
+                NativeBridge.submitCode("")
+                guardDialog = null
+            }
+            .show()
     }
 
     private companion object {

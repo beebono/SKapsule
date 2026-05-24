@@ -447,6 +447,125 @@ static void log_pending_exception(JNIEnv *env, const char *prefix) {
     (*env)->DeleteLocalRef(env, t);
 }
 
+// --- cross-VM bridge: HotSpot/native -> Android (ART) NativeBridge -----------
+// The embedded JRE (HotSpot) and Android's ART are two separate JavaVMs sharing
+// this process. Boot-overlay status (getdown, Steam auth) and the first-frame
+// signal originate on HotSpot threads but must reach NativeBridge, an ART class.
+// libsklauncher.so is loaded by ART (System.loadLibrary in NativeBridge), so
+// JNI_OnLoad hands us the ART VM; we cache NativeBridge's static methods there
+// (FindClass resolves against the app classloader at that point), then invoke
+// them from HotSpot threads after attaching them to the ART VM.
+static JavaVM   *g_art_vm;
+static jclass    g_nb_cls;            // NativeBridge, global ref
+static jmethodID g_nb_launch_status;  // onLaunchStatus(Ljava/lang/String;)V
+static jmethodID g_nb_render_ready;   // onRenderReady()V
+static jmethodID g_nb_prompt_device;  // promptForDeviceCode(Z)Ljava/lang/String;
+static jmethodID g_nb_prompt_email;   // promptForEmailCode(Ljava/lang/String;Z)Ljava/lang/String;
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    g_art_vm = vm;
+    JNIEnv *env = NULL;
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK || !env) {
+        return JNI_VERSION_1_6;
+    }
+    jclass cls = (*env)->FindClass(env, "com/skarm/launcher/NativeBridge");
+    if (cls) {
+        g_nb_cls = (*env)->NewGlobalRef(env, cls);
+        g_nb_launch_status = (*env)->GetStaticMethodID(env, cls, "onLaunchStatus",
+                                                       "(Ljava/lang/String;)V");
+        g_nb_render_ready  = (*env)->GetStaticMethodID(env, cls, "onRenderReady", "()V");
+        g_nb_prompt_device = (*env)->GetStaticMethodID(env, cls, "promptForDeviceCode",
+                                                       "(Z)Ljava/lang/String;");
+        g_nb_prompt_email  = (*env)->GetStaticMethodID(env, cls, "promptForEmailCode",
+                                                       "(Ljava/lang/String;Z)Ljava/lang/String;");
+        (*env)->DeleteLocalRef(env, cls);
+        LOGI("JNI_OnLoad: cached NativeBridge boot-overlay + Steam Guard callbacks");
+    } else {
+        (*env)->ExceptionClear(env);
+        LOGW("JNI_OnLoad: NativeBridge not found; boot-overlay callbacks disabled");
+    }
+    return JNI_VERSION_1_6;
+}
+
+// ART JNIEnv for the calling thread, attaching if needed. The long-lived HotSpot
+// threads that call this (render, jvm-main) are left attached for process life;
+// they don't exit before teardown, so we skip the matching detach.
+static JNIEnv *art_env(void) {
+    if (!g_art_vm) return NULL;
+    JNIEnv *env = NULL;
+    jint rc = (*g_art_vm)->GetEnv(g_art_vm, (void **)&env, JNI_VERSION_1_6);
+    if (rc == JNI_EDETACHED) {
+        if ((*g_art_vm)->AttachCurrentThread(g_art_vm, &env, NULL) != JNI_OK) return NULL;
+    } else if (rc != JNI_OK) {
+        return NULL;
+    }
+    return env;
+}
+
+static void art_launch_status(const char *msg) {
+    JNIEnv *env = art_env();
+    if (!env || !g_nb_cls || !g_nb_launch_status) return;
+    jstring s = (*env)->NewStringUTF(env, msg ? msg : "");
+    (*env)->CallStaticVoidMethod(env, g_nb_cls, g_nb_launch_status, s);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, s);
+}
+
+static void art_render_ready(void) {
+    JNIEnv *env = art_env();
+    if (!env || !g_nb_cls || !g_nb_render_ready) return;
+    (*env)->CallStaticVoidMethod(env, g_nb_cls, g_nb_render_ready);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+// HotSpot-registered native: SkBootstrap.nativeLaunchStatus(String) forwards
+// getdown's StatusDisplay text to the ART boot overlay. Receives a HotSpot env.
+static void JNICALL sk_native_launch_status(JNIEnv *env, jclass thiz, jstring msg) {
+    const char *c = msg ? (*env)->GetStringUTFChars(env, msg, NULL) : NULL;
+    art_launch_status(c ? c : "");
+    if (c) (*env)->ReleaseStringUTFChars(env, msg, c);
+}
+
+// Marshals an ART String result back into a HotSpot String. `art_result` is a
+// local ref in the ART VM; `hs_env` is the HotSpot env of the calling thread.
+// Returns a fresh HotSpot jstring (never NULL: "" on any failure, since callers
+// — JavaSteam's handleCodeAuth — throw on a null/empty code anyway).
+static jstring hs_string_from_art(JNIEnv *hs_env, JNIEnv *art, jstring art_result) {
+    if (!art_result) return (*hs_env)->NewStringUTF(hs_env, "");
+    const char *c = (*art)->GetStringUTFChars(art, art_result, NULL);
+    jstring out = (*hs_env)->NewStringUTF(hs_env, c ? c : "");
+    if (c) (*art)->ReleaseStringUTFChars(art, art_result, c);
+    (*art)->DeleteLocalRef(art, art_result);
+    return out;
+}
+
+// HotSpot-registered natives: SkBootstrap.nativePrompt{Device,Email}Code BLOCK
+// on the ART side (NativeBridge parks the login thread until the user submits a
+// code), then return it to frenchpress. The calling HotSpot thread is attached
+// to ART for the duration via art_env().
+static jstring JNICALL sk_native_prompt_device_code(JNIEnv *env, jclass thiz, jboolean prevWrong) {
+    JNIEnv *art = art_env();
+    if (!art || !g_nb_cls || !g_nb_prompt_device) return (*env)->NewStringUTF(env, "");
+    jstring r = (jstring)(*art)->CallStaticObjectMethod(art, g_nb_cls, g_nb_prompt_device, prevWrong);
+    if ((*art)->ExceptionCheck(art)) { (*art)->ExceptionClear(art); r = NULL; }
+    return hs_string_from_art(env, art, r);
+}
+
+static jstring JNICALL sk_native_prompt_email_code(JNIEnv *env, jclass thiz, jstring email,
+                                                   jboolean prevWrong) {
+    JNIEnv *art = art_env();
+    if (!art || !g_nb_cls || !g_nb_prompt_email) return (*env)->NewStringUTF(env, "");
+    // Re-marshal the HotSpot `email` arg into an ART String for the ART call.
+    const char *ec = email ? (*env)->GetStringUTFChars(env, email, NULL) : NULL;
+    jstring art_email = (*art)->NewStringUTF(art, ec ? ec : "");
+    if (ec) (*env)->ReleaseStringUTFChars(env, email, ec);
+    jstring r = (jstring)(*art)->CallStaticObjectMethod(art, g_nb_cls, g_nb_prompt_email,
+                                                        art_email, prevWrong);
+    if ((*art)->ExceptionCheck(art)) { (*art)->ExceptionClear(art); r = NULL; }
+    (*art)->DeleteLocalRef(art, art_email);
+    return hs_string_from_art(env, art, r);
+}
+
 static void *jvm_thread_main(void *arg) {
     (void)arg;
     redirect_stdio_to_log();
@@ -576,10 +695,13 @@ static void *jvm_thread_main(void *arg) {
     ADD_OPT("-Dcom.threerings.froth.disable_steam_api=true");
     if (frenchpress) {
         ADD_OPT(opt_fp_jar);
-        // Force the headless (env-var) credential prompt; otherwise frenchpress would
-        // pick SwingCredentialPrompt on the non-headless cacio AWT and render into an
-        // invisible buffer. With no FRENCHPRESS_STEAM_USER this yields a web account.
-        ADD_OPT("-Dfrenchpress.credentialPrompt=co.frenchpress.HeadlessEnvPrompt");
+        // Force our native bridge prompt: username/password still come from the
+        // FRENCHPRESS_STEAM_USER/PASS env (set from the Android login screen), but
+        // Steam Guard codes are collected via an Android dialog (NativeBridge ->
+        // GameActivity). This shadows SwingCredentialPrompt, which would otherwise
+        // be chosen on the non-headless cacio AWT and render into an invisible
+        // buffer. With no FRENCHPRESS_STEAM_USER it still yields a web account.
+        ADD_OPT("-Dfrenchpress.credentialPrompt=com.skarm.launcher.bootstrap.NativeBridgePrompt");
     }
     ADD_OPT("-Dno_log_redir=true");
     ADD_OPT("-Dsilent=launch");
@@ -642,8 +764,15 @@ static void *jvm_thread_main(void *arg) {
             JNINativeMethod m[] = {
                 { "registerGlfwNatives", "(Ljava/lang/Class;)V",
                   (void *)Java_com_skarm_launcher_bootstrap_SkBootstrap_registerGlfwNatives },
+                { "nativeLaunchStatus", "(Ljava/lang/String;)V",
+                  (void *)sk_native_launch_status },
+                { "nativePromptDeviceCode", "(Z)Ljava/lang/String;",
+                  (void *)sk_native_prompt_device_code },
+                { "nativePromptEmailCode", "(Ljava/lang/String;Z)Ljava/lang/String;",
+                  (void *)sk_native_prompt_email_code },
             };
-            jint rrc = (*env)->RegisterNatives(env, skBoot, m, 1);
+            jint rrc = (*env)->RegisterNatives(env, skBoot, m,
+                                               sizeof(m) / sizeof(m[0]));
             if (rrc != 0) {
                 LOGE("RegisterNatives on SkBootstrap failed: rc=%d", rrc);
             } else {
@@ -795,6 +924,7 @@ static jintArray JNICALL glfw_get_surface_size_impl(JNIEnv *env, jclass thiz) {
 static void JNICALL glfw_swap_buffers_impl(JNIEnv *env, jclass thiz, jlong window) {
     // Pick up a surface that changed while we were backgrounded (Android resume).
     render_thread_rebind_if_dirty();
+    bool swapped = false;
     pthread_mutex_lock(&egl_lock);
     if (gfx.display != EGL_NO_DISPLAY && gfx.surface != EGL_NO_SURFACE) {
         if (!eglSwapBuffers(gfx.display, gfx.surface)) {
@@ -802,9 +932,20 @@ static void JNICALL glfw_swap_buffers_impl(JNIEnv *env, jclass thiz, jlong windo
             if (err != EGL_BAD_SURFACE) {
                 LOGW("eglSwapBuffers: %s", egl_err_str(err));
             }
+        } else {
+            swapped = true;
         }
     }
     pthread_mutex_unlock(&egl_lock);
+
+    // First successful frame: tell the ART boot overlay to dismiss. One-shot; the
+    // overlay's own idempotency guard tolerates a stray repeat, but we gate here
+    // anyway so we don't attach/call ART every frame for the rest of the session.
+    static atomic_bool first_frame_signaled = ATOMIC_VAR_INIT(false);
+    if (swapped && !atomic_exchange(&first_frame_signaled, true)) {
+        LOGI("first frame swapped; signaling boot-overlay dismissal");
+        art_render_ready();
+    }
 }
 
 // Drain up to (out.length/4) event records into the caller's int[]. Returns the

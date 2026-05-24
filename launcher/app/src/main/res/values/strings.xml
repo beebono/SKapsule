@@ -13,4 +13,13 @@
     <string name="steam_username">Steam username</string>
     <string name="steam_password">Steam password</string>
     <string name="steam_login_ok">Sign in</string>
+    <string name="boot_starting">Starting Java runtime…</string>
+    <string name="boot_updating">Updating before launch…</string>
+    <string name="boot_steam_auth">Waiting for Steam authorization…</string>
+    <string name="steam_guard_title">Steam Guard</string>
+    <string name="steam_guard_hint">Code</string>
+    <string name="steam_guard_device_message">Enter the Steam Guard code from your authenticator app.</string>
+    <string name="steam_guard_device_retry">That code was incorrect. Enter the current Steam Guard code from your authenticator app.</string>
+    <string name="steam_guard_email_message">Enter the Steam Guard code sent to %1$s.</string>
+    <string name="steam_guard_email_retry">That code was incorrect. Enter the new Steam Guard code sent to %1$s.</string>
 </resources>

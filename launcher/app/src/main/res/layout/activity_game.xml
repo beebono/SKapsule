@@ -28,4 +28,33 @@
         android:layout_width="1dp"
         android:layout_height="1dp" />
 
+    <!-- Boot overlay: covers the otherwise-black gap between this Activity opening
+         and SK rendering its first frame. Driven by NativeBridge.onLaunchStatus
+         (JVM boot, getdown update, Steam auth) and dismissed on first frame.
+         Drawn last so it sits on top of the SurfaceView. -->
+    <LinearLayout
+        android:id="@+id/boot_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/black"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <ProgressBar
+            android:id="@+id/boot_progress"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="20dp" />
+
+        <TextView
+            android:id="@+id/boot_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/boot_starting"
+            android:textColor="@android:color/white"
+            android:textSize="16sp" />
+
+    </LinearLayout>
+
 </FrameLayout>

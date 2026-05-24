@@ -196,5 +196,28 @@ public final class SkBootstrap {
 
     private static native void registerGlfwNatives(Class<?> glfwClass);
 
+    /**
+     * Forwards a boot-phase status string to the Android boot overlay. Registered
+     * from native (sklauncher.c) alongside registerGlfwNatives; bridges the HotSpot
+     * VM to ART's NativeBridge.onLaunchStatus, which the two VMs can't do directly.
+     * Safe no-op if native registration hasn't happened yet (UnsatisfiedLinkError
+     * is swallowed by callers).
+     */
+    static native void nativeLaunchStatus(String message);
+
+    /**
+     * Blocks the calling (HotSpot) thread while the Android UI collects a Steam
+     * Guard authenticator (TOTP) code, then returns it ("" if none/cancelled).
+     * Bridges to ART's {@code NativeBridge.promptForDeviceCode} the same way
+     * {@link #nativeLaunchStatus} reaches the overlay. Reached via reflection
+     * from {@code NativeBridgePrompt}, which runs in SK's classloader and so
+     * must target THIS (system-loader) copy of SkBootstrap — the one whose
+     * natives sklauncher.c registered.
+     */
+    static native String nativePromptDeviceCode(boolean prevWrong);
+
+    /** Blocking Steam Guard email-code prompt. See {@link #nativePromptDeviceCode}. */
+    static native String nativePromptEmailCode(String email, boolean prevWrong);
+
     private SkBootstrap() {} // static-only
 }
