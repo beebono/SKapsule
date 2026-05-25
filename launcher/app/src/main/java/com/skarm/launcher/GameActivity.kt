@@ -463,6 +463,9 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
             // on first launch only. Path = userRoot (home/.userPrefs, see
             // sklauncher.c) + the JDK's appended .java/.userPrefs.
             PrefsInstaller.seedDefaults(File(home, ".userPrefs/.java/.userPrefs"))
+            val metrics = resources.displayMetrics
+            val sw = metrics.widthPixels
+            val sh = metrics.heightPixels
             NativeBridge.startJvm(
                 jreHome = JreInstaller.homeDir(this).absolutePath,
                 classpath = classpath,
@@ -474,6 +477,8 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
                 steamUser = steamUser,
                 steamPass = steamPass,
                 binDir = binDir,
+                screenWidth = sw,
+                screenHeight = sh,
             )
         }
     }

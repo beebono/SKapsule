@@ -8,6 +8,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.SeekBar
@@ -30,6 +31,13 @@ class TouchControlOverlay @JvmOverloads constructor(
     // Editor UI Panel
     private val editorPanel: LinearLayout
 
+    // Reset Layout double-tap gate
+    private var resetArmed = false
+    private val resetDisarm = Runnable {
+        resetArmed = false
+        editorPanel.findViewWithTag<Button>("resetButton")?.text = RESET_LABEL
+    }
+
     init {
         // Build editor panel
         editorPanel = LinearLayout(context).apply {
@@ -37,7 +45,11 @@ class TouchControlOverlay @JvmOverloads constructor(
             setBackgroundColor(Color.parseColor("#80000000"))
             setPadding(32, 32, 32, 32)
             visibility = View.GONE
-            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER)
+            // Bound the panel width so it doesn't stretch across the whole
+            // screen (a MATCH_PARENT separator otherwise forces a WRAP_CONTENT
+            // vertical LinearLayout to fill the full width).
+            val panelWidth = (320 * resources.displayMetrics.density).toInt()
+            layoutParams = LayoutParams(panelWidth, LayoutParams.WRAP_CONTENT, Gravity.CENTER)
             
             // Global Settings
             val globalTitle = TextView(context).apply { text = "Global Settings"; setTextColor(Color.WHITE) }
@@ -46,10 +58,11 @@ class TouchControlOverlay @JvmOverloads constructor(
             val enableSwitch = Switch(context).apply {
                 text = "Enable Controls"
                 setTextColor(Color.WHITE)
+                tag = "enableSwitch"
                 isChecked = layoutData.controlsEnabled
                 setOnCheckedChangeListener { _, isChecked ->
                     layoutData.controlsEnabled = isChecked
-                    updateVisibility()
+                    applyControlAppearance()
                 }
             }
             addView(enableSwitch)
@@ -58,17 +71,26 @@ class TouchControlOverlay @JvmOverloads constructor(
             addView(opacityLabel)
             val opacitySlider = SeekBar(context).apply {
                 max = 100
+                tag = "opacitySlider"
                 progress = (layoutData.globalOpacity * 100).toInt()
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                         layoutData.globalOpacity = progress / 100f
-                        updateOpacity()
+                        applyControlAppearance()
                     }
                     override fun onStartTrackingTouch(seekBar: SeekBar?) {}
                     override fun onStopTrackingTouch(seekBar: SeekBar?) {}
                 })
             }
             addView(opacitySlider)
+
+            // Reset Layout (double-tap gated so a stray tap doesn't wipe work)
+            val resetButton = Button(context).apply {
+                text = RESET_LABEL
+                tag = "resetButton"
+                setOnClickListener { handleResetTap(this) }
+            }
+            addView(resetButton)
 
             // Separator
             addView(View(context).apply {
@@ -145,35 +167,36 @@ class TouchControlOverlay @JvmOverloads constructor(
             controlViews.add(view)
         }
         
-        updateVisibility()
-        updateOpacity()
+        applyControlAppearance()
     }
 
-    private fun updateVisibility() {
+    /**
+     * Single source of truth for control visibility and alpha. Call this on any
+     * state change (mode toggle, opacity change, enable toggle, rebuild) so the
+     * displayed appearance never drifts out of sync.
+     *
+     * In edit mode visible controls are boosted to at least [EDIT_MODE_MIN_OPACITY]
+     * so they're easy to see and drag; hidden controls show faintly. Exiting edit
+     * mode restores the user's chosen global opacity (and hides hidden controls).
+     */
+    private fun applyControlAppearance() {
         val enabled = layoutData.controlsEnabled
         for (view in controlViews) {
             if (inEditMode) {
                 view.visibility = View.VISIBLE
-                view.alpha = if (view.node.visible) layoutData.globalOpacity else 0.3f
+                view.alpha = if (view.node.visible) {
+                    maxOf(layoutData.globalOpacity, EDIT_MODE_MIN_OPACITY)
+                } else {
+                    EDIT_HIDDEN_OPACITY
+                }
             } else {
                 view.visibility = if (enabled && view.node.visible) View.VISIBLE else View.GONE
                 view.alpha = layoutData.globalOpacity
             }
         }
-    }
 
-    private fun updateOpacity() {
-        val opacity = layoutData.globalOpacity
-        for (view in controlViews) {
-            if (inEditMode && !view.node.visible) {
-                view.alpha = 0.3f
-            } else {
-                view.alpha = opacity
-            }
-        }
-        
         // Notify Activity if there's a listener to update static buttons (Keyboard, Gear)
-        opacityChangeListener?.invoke(opacity)
+        opacityChangeListener?.invoke(layoutData.globalOpacity)
     }
 
     var opacityChangeListener: ((Float) -> Unit)? = null
@@ -223,8 +246,37 @@ class TouchControlOverlay @JvmOverloads constructor(
             view.invalidate()
         }
         
-        updateVisibility()
+        applyControlAppearance()
         updateEditorPanel()
+    }
+
+    private fun handleResetTap(button: Button) {
+        if (resetArmed) {
+            removeCallbacks(resetDisarm)
+            resetArmed = false
+            button.text = RESET_LABEL
+            resetLayout()
+        } else {
+            // First tap: arm and wait for a confirming second tap.
+            resetArmed = true
+            button.text = RESET_CONFIRM_LABEL
+            removeCallbacks(resetDisarm)
+            postDelayed(resetDisarm, RESET_CONFIRM_WINDOW_MS)
+        }
+    }
+
+    private fun resetLayout() {
+        layoutData = TouchControlManager.createDefaultLayout()
+        selectView(null)
+        buildControls()
+        TouchControlManager.saveLayout(context, layoutData)
+
+        // Refresh the global controls to reflect the restored defaults.
+        editorPanel.findViewWithTag<Switch>("enableSwitch")?.isChecked = layoutData.controlsEnabled
+        editorPanel.findViewWithTag<SeekBar>("opacitySlider")?.progress =
+            (layoutData.globalOpacity * 100).toInt()
+
+        editorPanel.bringToFront()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -335,5 +387,17 @@ class TouchControlOverlay @JvmOverloads constructor(
             scaleLabel.visibility = View.GONE
             scaleSlider.visibility = View.GONE
         }
+    }
+
+    companion object {
+        private const val RESET_LABEL = "Reset Layout"
+        private const val RESET_CONFIRM_LABEL = "Tap again to confirm"
+        private const val RESET_CONFIRM_WINDOW_MS = 2500L
+
+        // In edit mode, visible controls are shown at least this opaque so they're
+        // easy to see and drag, even if the user's global opacity is very low.
+        private const val EDIT_MODE_MIN_OPACITY = 0.85f
+        // Hidden controls are shown faintly in edit mode so they can be re-enabled.
+        private const val EDIT_HIDDEN_OPACITY = 0.3f
     }
 }

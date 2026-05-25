@@ -41,6 +41,8 @@ object NativeBridge {
         steamUser: String,
         steamPass: String,
         binDir: String,
+        screenWidth: Int,
+        screenHeight: Int,
     )
 
     /** Launches Spiral Knights inside the running JVM. (Stub) */

@@ -71,6 +71,8 @@ static struct {
     char steam_user[256];        // FRENCHPRESS_STEAM_USER (first login only); empty = web
     char steam_pass[256];        // FRENCHPRESS_STEAM_PASS
     char bin_dir[1024];          // prepended to PATH so SK's Runtime.exec finds our xdg-open shim
+    int initial_screen_width;
+    int initial_screen_height;
 } jvm = { .started = ATOMIC_VAR_INIT(false) };
 
 // --- input event ring buffer --------------------------------------------------
@@ -699,8 +701,8 @@ static void *jvm_thread_main(void *arg) {
                  jvm.cacio_dir, jvm.cacio_dir);
         snprintf(opt_cacio_agent, sizeof opt_cacio_agent,
                  "-javaagent:%s/cacio-tta.jar", jvm.cacio_dir);
-        int sw = gfx.width  > 0 ? gfx.width  : 1280;
-        int sh = gfx.height > 0 ? gfx.height : 720;
+        int sw = jvm.initial_screen_width  > 0 ? jvm.initial_screen_width  : 1280;
+        int sh = jvm.initial_screen_height > 0 ? jvm.initial_screen_height : 720;
         snprintf(opt_cacio_screensize, sizeof opt_cacio_screensize,
                  "-Dcacio.managed.screensize=%dx%d", sw, sh);
     }
@@ -907,7 +909,8 @@ static void start_jvm_thread_once(const char *jre_home, const char *classpath,
                                   const char *lib_path, const char *app_files,
                                   const char *cacio_dir, const char *frenchpress_jar,
                                   const char *cred_file, const char *steam_user,
-                                  const char *steam_pass, const char *bin_dir) {
+                                  const char *steam_pass, const char *bin_dir,
+                                  int screen_width, int screen_height) {
     bool expected = false;
     if (!atomic_compare_exchange_strong(&jvm.started, &expected, true)) {
         LOGW("JVM thread already started");
@@ -923,6 +926,8 @@ static void start_jvm_thread_once(const char *jre_home, const char *classpath,
     copy_arg(jvm.steam_user, sizeof(jvm.steam_user), steam_user);
     copy_arg(jvm.steam_pass, sizeof(jvm.steam_pass), steam_pass);
     copy_arg(jvm.bin_dir,    sizeof(jvm.bin_dir),    bin_dir);
+    jvm.initial_screen_width = screen_width;
+    jvm.initial_screen_height = screen_height;
 
     int rc = pthread_create(&jvm.thread, NULL, jvm_thread_main, NULL);
     if (rc != 0) {
@@ -960,7 +965,9 @@ static void JNICALL glfw_make_current_impl(JNIEnv *env, jclass thiz, jlong windo
 static jintArray JNICALL glfw_get_surface_size_impl(JNIEnv *env, jclass thiz) {
     jintArray arr = (*env)->NewIntArray(env, 2);
     if (!arr) return NULL;
-    jint dims[2] = { gfx.width, gfx.height };
+    int w = gfx.width > 0 ? gfx.width : jvm.initial_screen_width;
+    int h = gfx.height > 0 ? gfx.height : jvm.initial_screen_height;
+    jint dims[2] = { w, h };
     (*env)->SetIntArrayRegion(env, arr, 0, 2, dims);
     return arr;
 }
@@ -970,6 +977,12 @@ static void JNICALL glfw_swap_buffers_impl(JNIEnv *env, jclass thiz, jlong windo
     render_thread_rebind_if_dirty();
     bool swapped = false;
     pthread_mutex_lock(&egl_lock);
+    while (gfx.surface == EGL_NO_SURFACE) {
+        pthread_cond_wait(&egl_surface_ready, &egl_lock);
+        pthread_mutex_unlock(&egl_lock);
+        render_thread_rebind_if_dirty();
+        pthread_mutex_lock(&egl_lock);
+    }
     if (gfx.display != EGL_NO_DISPLAY && gfx.surface != EGL_NO_SURFACE) {
         if (!eglSwapBuffers(gfx.display, gfx.surface)) {
             EGLint err = eglGetError();
@@ -1093,7 +1106,8 @@ Java_com_skarm_launcher_NativeBridge_startJvm(JNIEnv *env, jobject thiz,
                                               jstring libPath, jstring appFiles,
                                               jstring cacioDir, jstring frenchpressJar,
                                               jstring credFile, jstring steamUser,
-                                              jstring steamPass, jstring binDir) {
+                                              jstring steamPass, jstring binDir,
+                                              jint screenWidth, jint screenHeight) {
     const char *home = (*env)->GetStringUTFChars(env, jreHome,   NULL);
     const char *cp   = (*env)->GetStringUTFChars(env, classpath, NULL);
     const char *lp   = (*env)->GetStringUTFChars(env, libPath,   NULL);
@@ -1114,7 +1128,7 @@ Java_com_skarm_launcher_NativeBridge_startJvm(JNIEnv *env, jobject thiz,
     LOGI("  credFile    = %s", cf);
     LOGI("  steamUser   = %s", su[0] ? "(set)" : "(none)");  // never log pass
     LOGI("  binDir      = %s", bd);
-    start_jvm_thread_once(home, cp, lp, af, cd, fj, cf, su, sp, bd);
+    start_jvm_thread_once(home, cp, lp, af, cd, fj, cf, su, sp, bd, screenWidth, screenHeight);
     (*env)->ReleaseStringUTFChars(env, jreHome,   home);
     (*env)->ReleaseStringUTFChars(env, classpath, cp);
     (*env)->ReleaseStringUTFChars(env, libPath,   lp);

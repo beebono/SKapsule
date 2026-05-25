@@ -128,7 +128,7 @@ object TouchControlManager {
             .apply()
     }
 
-    private fun createDefaultLayout(): TouchLayoutData {
+    fun createDefaultLayout(): TouchLayoutData {
         val layout = TouchLayoutData()
         
         // Left Joystick (Move)
@@ -137,11 +137,12 @@ object TouchControlManager {
         // Right Joystick (Face) - Tap to Primary Attack handled in Joystick implementation
         layout.nodes.add(ControlNode("joy_face", ControlType.JOYSTICK_RIGHT, 0.85f, 0.7f))
 
-        // Strafe (R3) - toggle button offset to the lower right of Movement Circle pad
-        layout.nodes.add(ControlNode("btn_strafe", ControlType.BUTTON, 0.28f, 0.85f, buttonCode = GP_BTN_RIGHT_THUMB, isToggle = true, label = "Strafe"))
+        // Strafe (R3) - toggle button offset to the lower right of Movement Circle pad.
+        // Kept above the bottom Ability/Item row (y=0.9) so they don't overlap.
+        layout.nodes.add(ControlNode("btn_strafe", ControlType.BUTTON, 0.28f, 0.72f, buttonCode = GP_BTN_RIGHT_THUMB, isToggle = true, label = "Strafe"))
 
-        // Defend (LTrig) - hold button offset to lower left of Facing Circle pad
-        layout.nodes.add(ControlNode("btn_defend", ControlType.BUTTON, 0.72f, 0.85f, buttonCode = AXIS_LTRIGGER, isAxisTrigger = true, label = "Defend"))
+        // Defend (LTrig) - hold button offset to lower left of Facing Circle pad.
+        layout.nodes.add(ControlNode("btn_defend", ControlType.BUTTON, 0.72f, 0.72f, buttonCode = AXIS_LTRIGGER, isAxisTrigger = true, label = "Defend"))
 
         // Dodge (L3) - tap button offset above the Facing Circle pad
         layout.nodes.add(ControlNode("btn_dodge", ControlType.BUTTON, 0.78f, 0.45f, buttonCode = GP_BTN_LEFT_THUMB, label = "Dodge"))
@@ -155,10 +156,13 @@ object TouchControlManager {
         // Next Weap (R1) - Down glyph arrow button offset to the right of the Facing Circle pad
         layout.nodes.add(ControlNode("btn_nextweap", ControlType.BUTTON, 0.95f, 0.85f, buttonCode = GP_BTN_RIGHT_BUMPER, label = "↓"))
 
-        // Bottom centered buttons in a row from left to right by default
-        val centerStartX = 0.35f
+        // Bottom centered buttons in a row from left to right by default.
+        // Keep the 7-button row centered on screen and clear of the move
+        // joystick (right edge ~0.22) and facing joystick (left edge ~0.78).
+        val gap = 0.07f
         val bottomY = 0.9f
-        val gap = 0.08f
+        // Center the row around 0.5: first button = 0.5 - gap * (count-1)/2
+        val centerStartX = 0.5f - gap * 3f
 
         layout.nodes.add(ControlNode("btn_ab1", ControlType.BUTTON, centerStartX + gap * 0, bottomY, buttonCode = GP_BTN_A, label = "A1"))
         layout.nodes.add(ControlNode("btn_ab2", ControlType.BUTTON, centerStartX + gap * 1, bottomY, buttonCode = GP_BTN_B, label = "A2"))
