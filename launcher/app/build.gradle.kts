@@ -25,8 +25,24 @@ val hasReleaseSigning = ksStoreFile != null && ksStorePass != null &&
 
 // versionCode must monotonically increase for over-the-top updates. Overridable for
 // CI/publish via the SK_VERSION_CODE env var (CI passes github.run_number); local dev
-// builds default to 1. versionName stays the human-facing release string.
+// builds default to 1.
 val skVersionCode = System.getenv("SK_VERSION_CODE")?.toIntOrNull() ?: 1
+
+// versionName derives from the latest reachable git tag (v1.4.0 -> "1.4.0") so it can't
+// drift from releases the way the old hard-coded string did. Override with SK_VERSION_NAME
+// for CI / shallow clones with no tags; falls back to a literal if git or tags are absent.
+// NOTE: reads the latest tag, so tag BEFORE building or the APK reports the prior version.
+val skVersionName: String = System.getenv("SK_VERSION_NAME")
+    ?: runCatching {
+        val exec = providers.exec {
+            commandLine("git", "describe", "--tags", "--abbrev=0")
+            isIgnoreExitValue = true
+        }
+        if (exec.result.get().exitValue == 0)
+            exec.standardOutput.asText.get().trim().removePrefix("v")
+        else null
+    }.getOrNull()?.takeIf { it.isNotEmpty() }
+    ?: "1.0.0"
 
 android {
     namespace = "com.skarm.launcher"
@@ -42,7 +58,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = skVersionCode
-        versionName = "1.0.0"
+        versionName = skVersionName
 
         ndk {
             // who even uses 32-bit
