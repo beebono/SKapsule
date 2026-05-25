@@ -98,6 +98,19 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
         refreshGamepadPresence()
 
         binding.btnKeyboard.setOnClickListener { toggleSoftKeyboard() }
+        binding.btnEditLayout.setOnClickListener { binding.touchOverlay.toggleEditMode() }
+
+        binding.touchOverlay.opacityChangeListener = { opacity ->
+            val minOpacity = 0.2f
+            val finalOpacity = Math.max(opacity, minOpacity)
+            binding.btnKeyboard.alpha = finalOpacity
+            binding.btnEditLayout.alpha = finalOpacity
+        }
+
+        // Initially trigger the opacity listener to set the correct starting opacity
+        binding.touchOverlay.opacityChangeListener?.invoke(
+            com.skarm.launcher.touch.TouchControlManager.loadLayout(this).globalOpacity
+        )
 
         // Make SK's News/wiki/forum links open the system browser. Done before
         // startJvm (in surfaceChanged) so binDir is ready to thread into PATH.
@@ -148,6 +161,9 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
      */
     @SuppressLint("ClickableViewAccessibility")
     private fun wireTouchInput() {
+        // We now handle standard game touches directly in the TouchOverlay to allow
+        // the custom touch controls to intercept first. The overlay will pass unhandled
+        // touches to this listener on the SurfaceView.
         surface.setOnTouchListener { _, event ->
             val x = event.x.toInt()
             val y = event.y.toInt()
@@ -592,7 +608,7 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
             .show()
     }
 
-    private companion object {
+    companion object {
         const val TAG = "GameActivity"
 
         // Abstract-namespace socket the xdg-open shim relays URLs over. Must match
