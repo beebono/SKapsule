@@ -23,4 +23,13 @@
     <string name="steam_guard_email_message">Enter the Steam Guard code sent to %1$s.</string>
     <string name="steam_guard_email_retry">That code was incorrect. Enter the new Steam Guard code sent to %1$s.</string>
     <string name="url_confirm">Tap again to open %1$s</string>
+    <string name="share_logs">Share logs</string>
+    <string name="share_logs_chooser">Share diagnostic log</string>
+    <string name="share_logs_subject">SKapsule diagnostic log</string>
+    <string name="share_logs_empty">No logs to share yet.</string>
+    <string name="share_logs_failed">Couldn\'t capture logs: %1$s</string>
+    <string name="share_logs_crash_found">The last session crashed. Share the log so it can be diagnosed?</string>
+    <string name="save_logs">Save logs</string>
+    <string name="save_logs_saved">Log saved.</string>
+    <string name="save_logs_failed">Couldn\'t save the log.</string>
 </resources>

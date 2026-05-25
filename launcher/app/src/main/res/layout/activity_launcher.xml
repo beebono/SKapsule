@@ -71,4 +71,28 @@
 
     </LinearLayout>
 
+    <!-- Disabled until a launch has actually been attempted (there's nothing
+         useful to capture before that). Enabled in LauncherActivity.onResume. -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btn_share_logs"
+        style="?attr/borderlessButtonStyle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/share_logs"
+        android:enabled="false"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Guaranteed save-to-disk path (Storage Access Framework) for devices with
+         no useful share targets. Gated alongside btn_share_logs in onResume. -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btn_save_logs"
+        style="?attr/borderlessButtonStyle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/save_logs"
+        android:enabled="false"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
 </androidx.constraintlayout.widget.ConstraintLayout>

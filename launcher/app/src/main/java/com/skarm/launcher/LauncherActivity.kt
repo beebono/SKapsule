@@ -7,10 +7,13 @@ import android.util.Log
 import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.skarm.launcher.databinding.ActivityLauncherBinding
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -27,6 +30,24 @@ class LauncherActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityLauncherBinding
 
+    // Captured dump awaiting the SAF picker's chosen destination (the save flow is
+    // async: launch picker -> onResult writes to the URI). Held across that hop.
+    private var pendingSave: File? = null
+
+    // CreateDocument picker (no storage permission needed; DocumentsUI does the
+    // write). Result is the user-chosen content:// URI, or null if cancelled.
+    private val saveLog = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        val src = pendingSave.also { pendingSave = null }
+        if (uri == null || src == null) return@registerForActivityResult
+        val ok = LogExporter.copyToUri(this, src, uri)
+        Toast.makeText(
+            this, if (ok) R.string.save_logs_saved else R.string.save_logs_failed,
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityLauncherBinding.inflate(layoutInflater)
@@ -34,8 +55,43 @@ class LauncherActivity : AppCompatActivity() {
 
         binding.btnPlayWeb.setOnClickListener { launchGame(LoginMode.Web) }
         binding.btnPlaySteam.setOnClickListener { onPlaySteam() }
+        binding.btnShareLogs.setOnClickListener { LogExporter.captureAndShare(this) }
+        binding.btnSaveLogs.setOnClickListener { onSaveLogs() }
+
+        // If the previous session crashed, the handler auto-saved a dump. Offer to
+        // share it right away (once per launch); the button stays available too.
+        LogExporter.latestCrash(this)?.let { crash ->
+            AlertDialog.Builder(this)
+                .setMessage(R.string.share_logs_crash_found)
+                .setPositiveButton(R.string.share_logs) { _, _ -> LogExporter.share(this, crash) }
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+        }
 
         ensureRuntime()
+    }
+
+    /**
+     * Gate the Share Logs button on there being something worth sending: a launch
+     * was attempted this install, or a crash dump is on disk. Re-checked on resume
+     * because the launch marker is written by the :game process while we're paused.
+     */
+    override fun onResume() {
+        super.onResume()
+        val hasLogs = LogExporter.wasLaunchAttempted(this) || LogExporter.latestCrash(this) != null
+        binding.btnShareLogs.isEnabled = hasLogs
+        binding.btnSaveLogs.isEnabled = hasLogs
+    }
+
+    /** Captures a dump, then opens the SAF picker (suggesting its filename) to save it. */
+    private fun onSaveLogs() {
+        val file = LogExporter.capture(this)
+        if (file == null) {
+            Toast.makeText(this, R.string.share_logs_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingSave = file
+        saveLog.launch(file.name)
     }
 
     private fun ensureRuntime() {

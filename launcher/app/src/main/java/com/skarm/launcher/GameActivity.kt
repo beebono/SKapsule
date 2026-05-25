@@ -277,6 +277,9 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
             .setMessage(R.string.exit_confirm_message)
             .setPositiveButton(R.string.exit_confirm_yes) { _, _ -> shutdownGame() }
             .setNegativeButton(R.string.exit_confirm_no, null)
+            // Neutral button captures+shares the log right where a hang/crash bit,
+            // without forcing the user to back all the way out to the launcher.
+            .setNeutralButton(R.string.share_logs) { _, _ -> LogExporter.captureAndShare(this) }
             .show()
     }
 
@@ -396,6 +399,9 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
         if (!jvmKicked) {
             jvmKicked = true
             Log.i(TAG, "Launching SK (loginMode=$loginMode)")
+            // Tell the launcher there's now something worth sharing (cross-process
+            // marker; the launcher enables its Share Logs button on next resume).
+            LogExporter.markLaunchAttempted(this)
             // java.library.path / LD_LIBRARY_PATH = JRE's lib (libjvm, libGL via
             // gl4es) + LWJGL natives + the app's extracted nativeLibraryDir. The
             // last entry lets the exec'd jspawnhelper find libc++_shared.so and

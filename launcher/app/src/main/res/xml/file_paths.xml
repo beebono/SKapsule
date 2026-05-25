@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Diagnostic logs captured by LogExporter live in cacheDir/logs. cacheDir is
+         per-app (shared by the launcher and :game processes), so a log written by
+         either is shareable through this provider, which runs in the main process. -->
+    <cache-path name="logs" path="logs/" />
+</paths>
