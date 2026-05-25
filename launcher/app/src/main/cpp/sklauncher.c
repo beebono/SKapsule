@@ -51,6 +51,13 @@ static struct {
 // thread's bind/swap, so a background teardown can't free a surface mid-eglSwapBuffers.
 static pthread_mutex_t egl_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// Signaled (under egl_lock) by egl_bring_up when a window surface becomes
+// available. Lets SK's render thread park in glfw_make_current_impl when it
+// reaches GL bring-up while the app is backgrounded (no surface) — e.g. when a
+// Steam login completes before the user tabs back — instead of starting up with
+// no EGL context. See egl_bring_up() (producer) and glfw_make_current_impl (consumer).
+static pthread_cond_t egl_surface_ready = PTHREAD_COND_INITIALIZER;
+
 static struct {
     pthread_t thread;
     atomic_bool started;
@@ -191,8 +198,10 @@ static bool egl_bring_up(void) {
         }
     }
 
-    // Hand the (new) surface to SK's render thread to make current on its next frame.
+    // Hand the (new) surface to SK's render thread to make current on its next frame,
+    // and wake any render thread parked in glfw_make_current_impl waiting for it.
     atomic_store(&gfx.surface_dirty, 1);
+    pthread_cond_broadcast(&egl_surface_ready);
     ok = true;
 out:
     pthread_mutex_unlock(&egl_lock);
@@ -460,6 +469,7 @@ static JavaVM   *g_art_vm;
 static jclass    g_nb_cls;            // NativeBridge, global ref
 static jmethodID g_nb_launch_status;  // onLaunchStatus(Ljava/lang/String;)V
 static jmethodID g_nb_render_ready;   // onRenderReady()V
+static jmethodID g_nb_keep_alive;     // steamKeepAlive(Z)V
 static jmethodID g_nb_prompt_device;  // promptForDeviceCode(Z)Ljava/lang/String;
 static jmethodID g_nb_prompt_email;   // promptForEmailCode(Ljava/lang/String;Z)Ljava/lang/String;
 
@@ -475,6 +485,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         g_nb_launch_status = (*env)->GetStaticMethodID(env, cls, "onLaunchStatus",
                                                        "(Ljava/lang/String;)V");
         g_nb_render_ready  = (*env)->GetStaticMethodID(env, cls, "onRenderReady", "()V");
+        g_nb_keep_alive    = (*env)->GetStaticMethodID(env, cls, "steamKeepAlive", "(Z)V");
         g_nb_prompt_device = (*env)->GetStaticMethodID(env, cls, "promptForDeviceCode",
                                                        "(Z)Ljava/lang/String;");
         g_nb_prompt_email  = (*env)->GetStaticMethodID(env, cls, "promptForEmailCode",
@@ -517,6 +528,20 @@ static void art_render_ready(void) {
     if (!env || !g_nb_cls || !g_nb_render_ready) return;
     (*env)->CallStaticVoidMethod(env, g_nb_cls, g_nb_render_ready);
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+static void art_keep_alive(jboolean active) {
+    JNIEnv *env = art_env();
+    if (!env || !g_nb_cls || !g_nb_keep_alive) return;
+    (*env)->CallStaticVoidMethod(env, g_nb_cls, g_nb_keep_alive, active);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+// HotSpot-registered native: SkBootstrap.nativeSteamKeepAlive(boolean) toggles
+// the ART foreground service that keeps :game alive during Steam sign-in.
+static void JNICALL sk_native_steam_keep_alive(JNIEnv *env, jclass thiz, jboolean active) {
+    (void)env; (void)thiz;
+    art_keep_alive(active);
 }
 
 // HotSpot-registered native: SkBootstrap.nativeLaunchStatus(String) forwards
@@ -779,6 +804,8 @@ static void *jvm_thread_main(void *arg) {
                   (void *)Java_com_skarm_launcher_bootstrap_SkBootstrap_registerGlfwNatives },
                 { "nativeLaunchStatus", "(Ljava/lang/String;)V",
                   (void *)sk_native_launch_status },
+                { "nativeSteamKeepAlive", "(Z)V",
+                  (void *)sk_native_steam_keep_alive },
                 { "nativePromptDeviceCode", "(Z)Ljava/lang/String;",
                   (void *)sk_native_prompt_device_code },
                 { "nativePromptEmailCode", "(Ljava/lang/String;Z)Ljava/lang/String;",
@@ -912,10 +939,13 @@ static void JNICALL glfw_make_current_impl(JNIEnv *env, jclass thiz, jlong windo
              (long)pthread_self(), (long long)(unsigned long long)window);
     }
     pthread_mutex_lock(&egl_lock);
-    if (gfx.surface == EGL_NO_SURFACE) {
-        LOGE("glfwMakeContextCurrent: no EGL surface yet");
-        pthread_mutex_unlock(&egl_lock);
-        return;
+    // Surface gate: if SK reached GL bring-up while the app is backgrounded (e.g.
+    // a Steam login finished before the user tabbed back), park here until
+    // egl_bring_up signals egl_surface_ready, rather than starting up context-less.
+    // pthread_cond_wait atomically drops egl_lock while parked, so the UI thread's
+    // onSurfaceCreated/Changed -> egl_bring_up can run and wake us.
+    while (gfx.surface == EGL_NO_SURFACE) {
+        pthread_cond_wait(&egl_surface_ready, &egl_lock);
     }
     if (egl_make_current_on_caller_thread()) {
         gl4es_bring_up_once();

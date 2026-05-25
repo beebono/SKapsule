@@ -98,6 +98,36 @@ object NativeBridge {
         bootListener?.onRenderReady()
     }
 
+    // --- JVM/native -> Android Steam-login keep-alive --------------------------
+    // frenchpress brackets its whole auth attempt with steamKeepAlive(true/false)
+    // (via SkBootstrap.nativeSteamKeepAlive -> sklauncher.c -> here). While active,
+    // a foreground service holds the :game process at a priority that survives the
+    // user tabbing out to the Steam Mobile App to approve the sign-in. Routed
+    // through the application Context, not the Activity, because the Activity's
+    // surface is destroyed during exactly that tab-out.
+
+    @Volatile
+    private var appContext: android.content.Context? = null
+
+    /** Called once per process from SkApplication.onCreate. */
+    fun attachContext(ctx: android.content.Context) {
+        appContext = ctx.applicationContext
+    }
+
+    /** Native -> start (active) or stop the sign-in keep-alive foreground service. */
+    @JvmStatic
+    fun steamKeepAlive(active: Boolean) {
+        val ctx = appContext ?: return
+        val intent = android.content.Intent(ctx, SteamAuthService::class.java)
+        try {
+            if (active) ctx.startForegroundService(intent) else ctx.stopService(intent)
+        } catch (t: Throwable) {
+            // A denied background-start (rare: auth somehow began off-foreground)
+            // must not crash the login thread; degrade to the old kill-prone path.
+            android.util.Log.w("NativeBridge", "steamKeepAlive($active) failed", t)
+        }
+    }
+
     // --- JVM/native -> Android Steam Guard (2FA) prompt ------------------------
     // Unlike the boot-overlay callbacks above (fire-and-forget), these are a
     // BLOCKING request/response: frenchpress's login thread (a HotSpot thread

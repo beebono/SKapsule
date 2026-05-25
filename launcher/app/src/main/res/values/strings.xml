@@ -29,6 +29,9 @@
     <string name="share_logs_empty">No logs to share yet.</string>
     <string name="share_logs_failed">Couldn\'t capture logs: %1$s</string>
     <string name="share_logs_crash_found">The last session crashed. Share the log so it can be diagnosed?</string>
+    <string name="steam_login_channel_name">Steam sign-in</string>
+    <string name="steam_login_notif_title">Signing in to Steam</string>
+    <string name="steam_login_notif_text">Keeping SKapsule running while you approve the sign-in. You can switch to the Steam Mobile App.</string>
     <string name="save_logs">Save logs</string>
     <string name="save_logs_saved">Log saved.</string>
     <string name="save_logs_failed">Couldn\'t save the log.</string>

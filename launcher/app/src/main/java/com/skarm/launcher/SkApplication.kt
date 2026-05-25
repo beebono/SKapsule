@@ -13,6 +13,10 @@ class SkApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Runs in every process, including :game — give NativeBridge an
+        // Activity-independent Context so the native Steam-login keep-alive can
+        // start/stop SteamAuthService even as the Activity surface tears down.
+        NativeBridge.attachContext(this)
         installCrashHandler()
     }
 

@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Keeps the :game process alive across the tab-out to the Steam Mobile App
+         during sign-in; see SteamAuthService. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
         android:glEsVersion="0x00020000"
@@ -45,6 +50,20 @@
             android:launchMode="singleTask"
             android:resizeableActivity="false"
             android:hardwareAccelerated="true" />
+
+        <!-- Holds the :game process at foreground priority during Steam sign-in
+             so the auth poll survives the user tabbing out to approve. Same
+             process as the JVM it protects; started/stopped only around the
+             auth attempt (SteamSession.attempt → NativeBridge.steamKeepAlive). -->
+        <service
+            android:name=".SteamAuthService"
+            android:process=":game"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="steam_login_approval" />
+        </service>
 
         <!-- Serves captured diagnostic logs (cacheDir/logs) to the share-sheet
              target via content:// URIs. Lives in the main process; the :game

@@ -206,6 +206,16 @@ public final class SkBootstrap {
     static native void nativeLaunchStatus(String message);
 
     /**
+     * Toggles the Android Steam-login keep-alive (a foreground service that holds
+     * the :game process alive while the user tabs out to approve the sign-in).
+     * Bridges to ART's {@code NativeBridge.steamKeepAlive} exactly like
+     * {@link #nativeLaunchStatus}. Reached via reflection from frenchpress's
+     * {@code SteamSession.attempt}, which brackets its auth attempt with
+     * {@code true}/{@code false}. Safe no-op until native registration runs.
+     */
+    static native void nativeSteamKeepAlive(boolean active);
+
+    /**
      * Blocks the calling (HotSpot) thread while the Android UI collects a Steam
      * Guard authenticator (TOTP) code, then returns it ("" if none/cancelled).
      * Bridges to ART's {@code NativeBridge.promptForDeviceCode} the same way
