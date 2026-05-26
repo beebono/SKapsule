@@ -2,7 +2,6 @@ package com.skarm.launcher.touch
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.view.KeyEvent
 import com.skarm.launcher.GameActivity
 import org.json.JSONArray
 import org.json.JSONObject
