@@ -62,3 +62,11 @@ tasks.named<Jar>("jar") {
     // it's first on SK's classpath and would shadow the real frenchpress.
     exclude("co/frenchpress/**")
 }
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
+
+tasks.named<Test>("test") {
+    useJUnit()
+}
