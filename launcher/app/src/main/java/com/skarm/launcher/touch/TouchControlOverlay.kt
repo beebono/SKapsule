@@ -14,6 +14,7 @@ import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
+import com.skarm.launcher.NativeBridge
 
 class TouchControlOverlay @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
@@ -194,6 +195,11 @@ class TouchControlOverlay @JvmOverloads constructor(
                 view.alpha = layoutData.globalOpacity
             }
         }
+
+        // Keep SK's view of the virtual controller in sync: it must see the pad as
+        // connected whenever the controls are enabled, or its glfwGetGamepadState
+        // poll reports "no controller" and every touch input is dropped.
+        NativeBridge.onVirtualGamepadConnected(enabled)
 
         // Notify Activity if there's a listener to update static buttons (Keyboard, Gear)
         opacityChangeListener?.invoke(layoutData.globalOpacity)

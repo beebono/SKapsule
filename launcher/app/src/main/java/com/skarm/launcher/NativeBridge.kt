@@ -58,6 +58,13 @@ object NativeBridge {
     /** Marks a controller connected/disconnected. Disconnect zeroes held state. */
     external fun onGamepadConnected(connected: Boolean)
 
+    /**
+     * Marks the on-screen touch controls (a virtual controller) active/inactive.
+     * SK treats the pad as connected while either this or a physical pad is on,
+     * so touch button/axis writes aren't dropped when no real controller exists.
+     */
+    external fun onVirtualGamepadConnected(connected: Boolean)
+
     /** Sets a button in the GLFW standard layout (index 0..14). */
     external fun onGamepadButton(index: Int, pressed: Boolean)
 

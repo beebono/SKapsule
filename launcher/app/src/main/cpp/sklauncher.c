@@ -113,12 +113,35 @@ static void input_push(int32_t type, int32_t a, int32_t b, int32_t c) {
 // rest=-1..pressed=+1), so this is a dumb mailbox.
 #define GP_BUTTONS 15
 #define GP_AXES    6
+// Trigger axes rest at -1 (not 0) in the GLFW standard layout.
+#define GP_AXIS_LTRIGGER 4
+#define GP_AXIS_RTRIGGER 5
 static struct {
     pthread_mutex_t lock;
-    atomic_bool present;
+    atomic_bool present;          // a physical controller is attached
+    atomic_bool virtual_present;  // the on-screen touch controls are active
     int8_t buttons[GP_BUTTONS];
     float  axes[GP_AXES];
 } gamepad = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+// SK should see a gamepad whenever either a physical pad or the touch overlay is
+// driving input — otherwise glfwGetGamepadState reports "no controller" and the
+// touch controls' button/axis writes are silently dropped.
+static inline bool gamepad_active(void) {
+    return atomic_load(&gamepad.present) || atomic_load(&gamepad.virtual_present);
+}
+
+// Reset to the GLFW resting state: all buttons up, sticks centered, triggers at
+// -1. Used on (dis)connect so a held input can't stick, and so a freshly enabled
+// virtual pad doesn't report half-pressed triggers (memset 0 == half pressed).
+static void gamepad_reset_state(void) {
+    pthread_mutex_lock(&gamepad.lock);
+    memset(gamepad.buttons, 0, sizeof gamepad.buttons);
+    memset(gamepad.axes,    0, sizeof gamepad.axes);
+    gamepad.axes[GP_AXIS_LTRIGGER] = -1.0f;
+    gamepad.axes[GP_AXIS_RTRIGGER] = -1.0f;
+    pthread_mutex_unlock(&gamepad.lock);
+}
 
 // --- EGL helpers --------------------------------------------------------------
 
@@ -1033,14 +1056,14 @@ static jint JNICALL glfw_drain_input_impl(JNIEnv *env, jclass thiz, jintArray ou
 }
 
 static jboolean JNICALL glfw_gamepad_present_impl(JNIEnv *env, jclass thiz) {
-    return atomic_load(&gamepad.present) ? JNI_TRUE : JNI_FALSE;
+    return gamepad_active() ? JNI_TRUE : JNI_FALSE;
 }
 
 // Copy current gamepad state into the caller's byte[15] / float[6]. Returns
 // false (and touches nothing) if no gamepad is connected.
 static jboolean JNICALL glfw_get_gamepad_state_impl(JNIEnv *env, jclass thiz,
                                                     jbyteArray outButtons, jfloatArray outAxes) {
-    if (!atomic_load(&gamepad.present) || !outButtons || !outAxes) return JNI_FALSE;
+    if (!gamepad_active() || !outButtons || !outAxes) return JNI_FALSE;
     int8_t btns[GP_BUTTONS];
     float  axes[GP_AXES];
     pthread_mutex_lock(&gamepad.lock);
@@ -1170,15 +1193,27 @@ Java_com_skarm_launcher_NativeBridge_onTouchEvent(JNIEnv *env, jobject thiz,
 JNIEXPORT void JNICALL
 Java_com_skarm_launcher_NativeBridge_onGamepadConnected(JNIEnv *env, jobject thiz,
                                                         jboolean connected) {
-    if (!connected) {
-        // Zero state so a held button/axis doesn't stick after disconnect.
-        pthread_mutex_lock(&gamepad.lock);
-        memset(gamepad.buttons, 0, sizeof gamepad.buttons);
-        memset(gamepad.axes,    0, sizeof gamepad.axes);
-        pthread_mutex_unlock(&gamepad.lock);
-    }
     atomic_store(&gamepad.present, connected ? true : false);
+    // Reset only once no source is left driving the pad, so toggling one source
+    // doesn't wipe the other's held state.
+    if (!gamepad_active()) gamepad_reset_state();
     LOGI("gamepad %s", connected ? "connected" : "disconnected");
+}
+
+// The on-screen touch controls act as a virtual controller: SK must treat the
+// pad as connected while they're enabled, even with no physical pad attached.
+JNIEXPORT void JNICALL
+Java_com_skarm_launcher_NativeBridge_onVirtualGamepadConnected(JNIEnv *env, jobject thiz,
+                                                               jboolean connected) {
+    bool was_active = gamepad_active();
+    atomic_store(&gamepad.virtual_present, connected ? true : false);
+    if (connected && !was_active) {
+        // Establish a clean resting state (triggers at -1) for the fresh pad.
+        gamepad_reset_state();
+    } else if (!gamepad_active()) {
+        gamepad_reset_state();
+    }
+    LOGI("virtual gamepad %s", connected ? "enabled" : "disabled");
 }
 
 JNIEXPORT void JNICALL
