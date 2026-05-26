@@ -222,12 +222,14 @@ class TouchButtonView(context: Context, node: ControlNode) : BaseTouchControl(co
     private var isPressedState = false
     private var isToggledOn = false
 
+    private val buttonRect = RectF()
+
     override fun onDraw(canvas: Canvas) {
         val centerX = width / 2f
         val centerY = height / 2f
         val size = min(width, height).toFloat()
         
-        val rect = RectF(
+        buttonRect.set(
             centerX - size / 2f,
             centerY - size / 2f,
             centerX + size / 2f,
@@ -238,7 +240,7 @@ class TouchButtonView(context: Context, node: ControlNode) : BaseTouchControl(co
         
         // Use a rounded square instead of a circle
         val cornerRadius = size * 0.25f
-        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, bgPaint)
+        canvas.drawRoundRect(buttonRect, cornerRadius, cornerRadius, bgPaint)
         
         // Draw label
         if (node.label.isNotEmpty()) {
