@@ -819,6 +819,29 @@ static void *jvm_thread_main(void *arg) {
     if (rc != JNI_OK) { LOGE("JNI_CreateJavaVM failed: rc=%d", rc); return NULL; }
     LOGI("JVM thread: JNI_CreateJavaVM OK");
 
+    // Force Java to capture the environment variables into ProcessEnvironment
+    // so we can unset them and remove sensitive credentials from /proc/self/environ.
+    {
+        jclass system_class = (*env)->FindClass(env, "java/lang/System");
+        if (system_class) {
+            jmethodID getenv_method = (*env)->GetStaticMethodID(env, system_class, "getenv", "()Ljava/util/Map;");
+            if (getenv_method) {
+                (*env)->CallStaticObjectMethod(env, system_class, getenv_method);
+            }
+            (*env)->DeleteLocalRef(env, system_class);
+        }
+
+        // Securely unset env vars
+        unsetenv("FRENCHPRESS_CRED_FILE");
+        unsetenv("FRENCHPRESS_STEAM_USER");
+        unsetenv("FRENCHPRESS_STEAM_PASS");
+
+        // Scrub the global struct buffers to prevent memory snooping
+        memset(jvm.cred_file, 0, sizeof(jvm.cred_file));
+        memset(jvm.steam_user, 0, sizeof(jvm.steam_user));
+        memset(jvm.steam_pass, 0, sizeof(jvm.steam_pass));
+    }
+
     {
         jclass skBoot = (*env)->FindClass(env, "com/skarm/launcher/bootstrap/SkBootstrap");
         if (!skBoot) {
