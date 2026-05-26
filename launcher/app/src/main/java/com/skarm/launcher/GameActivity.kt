@@ -246,10 +246,6 @@ class GameActivity : AppCompatActivity(), SurfaceHolder.Callback,
             KeyEvent.ACTION_UP -> {
                 if (glfwKey >= 0) NativeBridge.onKeyEvent(glfwKey, 0, 0)
             }
-            KeyEvent.ACTION_MULTIPLE -> {
-                // Batched characters (rare; some IMEs/adb paths). Emit each.
-                event.characters?.forEach { NativeBridge.onCharInput(it.code) }
-            }
         }
         return true
     }
