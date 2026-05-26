@@ -32,6 +32,12 @@ class TouchControlOverlay @JvmOverloads constructor(
     // Editor UI Panel
     private val editorPanel: LinearLayout
 
+    // Cached node settings views for fast updates
+    private var cachedNodeTitle: TextView? = null
+    private var cachedVisibleSwitch: Switch? = null
+    private var cachedScaleLabel: TextView? = null
+    private var cachedScaleSlider: SeekBar? = null
+
     // Reset Layout double-tap gate
     private var resetArmed = false
     private val resetDisarm = Runnable {
@@ -109,6 +115,7 @@ class TouchControlOverlay @JvmOverloads constructor(
                 visibility = View.GONE
             }
             addView(nodeTitle)
+            cachedNodeTitle = nodeTitle
 
             val visibleSwitch = Switch(context).apply {
                 text = "Visible"
@@ -123,6 +130,7 @@ class TouchControlOverlay @JvmOverloads constructor(
                 }
             }
             addView(visibleSwitch)
+            cachedVisibleSwitch = visibleSwitch
 
             val scaleLabel = TextView(context).apply { 
                 text = "Scale"
@@ -131,6 +139,7 @@ class TouchControlOverlay @JvmOverloads constructor(
                 visibility = View.GONE
             }
             addView(scaleLabel)
+            cachedScaleLabel = scaleLabel
             
             val scaleSlider = SeekBar(context).apply {
                 max = 200 // 0.5x to 2.5x
@@ -149,6 +158,7 @@ class TouchControlOverlay @JvmOverloads constructor(
                 })
             }
             addView(scaleSlider)
+            cachedScaleSlider = scaleSlider
         }
 
         buildControls()
@@ -371,10 +381,10 @@ class TouchControlOverlay @JvmOverloads constructor(
     }
 
     private fun updateEditorPanel() {
-        val nodeTitle = editorPanel.findViewWithTag<TextView>("nodeTitle")
-        val visibleSwitch = editorPanel.findViewWithTag<Switch>("visibleSwitch")
-        val scaleLabel = editorPanel.findViewWithTag<TextView>("scaleLabel")
-        val scaleSlider = editorPanel.findViewWithTag<SeekBar>("scaleSlider")
+        val nodeTitle = cachedNodeTitle ?: return
+        val visibleSwitch = cachedVisibleSwitch ?: return
+        val scaleLabel = cachedScaleLabel ?: return
+        val scaleSlider = cachedScaleSlider ?: return
 
         if (selectedView != null) {
             val node = selectedView!!.node
