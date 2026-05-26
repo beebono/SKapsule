@@ -65,6 +65,8 @@ tasks.named<Jar>("jar") {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation(files("$rootDir/app/src/main/assets/sk/getdown-pro.jar"))
+    testImplementation(files("$rootDir/app/src/main/assets/frenchpress/frenchpress.jar"))
 }
 
 tasks.named<Test>("test") {
