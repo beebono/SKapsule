@@ -154,3 +154,7 @@ val stageBootstrapJar by tasks.registering(Copy::class) {
     rename(".*", "sk-bootstrap.jar")
 }
 tasks.named("preBuild") { dependsOn(stageBootstrapJar) }
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
