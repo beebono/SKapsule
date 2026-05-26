@@ -29,11 +29,9 @@ and is not affiliated with, endorsed by, or supported by SEGA or Grey Havens.**
 
 ## Controls
 
-Gameplay is **gamepad-first**. Connect a Bluetooth/USB controller for the actual
-playing of the game.
+Gameplay is **gamepad-first**. Experimental touch controls are in place, but still need some fine-tuning and testing.
 
-- **Gamepad** — primary input for gameplay (movement, combat, menus).
-- **Touch** — intended for menuing and pointer interaction, not core combat.
+- **Gamepad or Touch** — primary input for gameplay (movement, combat, menus).
 - **Keyboard** — used as needed for text entry (login, chat). An on-screen
   **Keyboard** button is provided for devices without a physical keyboard.
 
