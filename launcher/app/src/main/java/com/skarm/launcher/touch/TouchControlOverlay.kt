@@ -291,7 +291,7 @@ class TouchControlOverlay @JvmOverloads constructor(
             // In play mode, let the overlay dispatch touches down to the controls,
             // or pass through to the game surface if no control was hit.
             var handled = false
-            for (i in controlViews.indices.reversed()) {
+            for (i in controlViews.size - 1 downTo 0) {
                 val view = controlViews[i]
                 if (view.visibility == View.VISIBLE && isPointInsideView(event.x, event.y, view)) {
                     val viewEvent = MotionEvent.obtain(event)
@@ -310,7 +310,7 @@ class TouchControlOverlay @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 // Find tapped view
                 var tappedView: BaseTouchControl? = null
-                for (i in controlViews.indices.reversed()) {
+                for (i in controlViews.size - 1 downTo 0) {
                     val view = controlViews[i]
                     if (isPointInsideView(event.x, event.y, view)) {
                         tappedView = view
