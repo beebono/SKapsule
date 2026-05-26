@@ -49,7 +49,7 @@ class TouchControlOverlay @JvmOverloads constructor(
         // Build editor panel
         editorPanel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#80000000"))
+            setBackgroundColor(HudPalette.SURFACE)
             setPadding(32, 32, 32, 32)
             visibility = View.GONE
             // Bound the panel width so it doesn't stretch across the whole
@@ -101,7 +101,7 @@ class TouchControlOverlay @JvmOverloads constructor(
 
             // Separator
             addView(View(context).apply {
-                setBackgroundColor(Color.LTGRAY)
+                setBackgroundColor(0x66FFFFFF.toInt())
                 layoutParams = LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, 2).apply {
                     setMargins(0, 16, 0, 16)
                 }
@@ -224,8 +224,8 @@ class TouchControlOverlay @JvmOverloads constructor(
         val h = bottom - top
 
         // Base sizes
-        val baseJoySize = minOf(w, h) * 0.3f
-        val baseBtnSize = minOf(w, h) * 0.15f
+        val baseJoySize = w * 0.135f
+        val baseBtnSize = w * 0.067f
 
         for (view in controlViews) {
             val node = view.node

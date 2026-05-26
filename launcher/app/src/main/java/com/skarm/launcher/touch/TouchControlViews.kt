@@ -43,17 +43,26 @@ abstract class BaseTouchControl(context: Context, val node: ControlNode) : View(
     abstract fun handleGameTouch(event: MotionEvent): Boolean
 }
 
+object HudPalette {
+    // Shared neutral palette for the in-game HUD (top bar, touch controls,
+    // editor popup). Picked to feel like overlay chrome rather than themed UI:
+    // dark, semi-transparent, no dynamic-color tint.
+    const val SURFACE: Int = 0xB3000000.toInt()        // popup panel
+    const val BUTTON_IDLE: Int = 0x99202020.toInt()    // touch button idle
+    const val BUTTON_PRESSED: Int = 0xCC606060.toInt() // touch button pressed/toggled
+    const val JOY_BG: Int = 0x66202020.toInt()         // joystick base (more transparent)
+    const val JOY_KNOB: Int = 0xCC808080.toInt()       // joystick knob
+}
+
 class TouchJoystickView(context: Context, node: ControlNode) : BaseTouchControl(context, node) {
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.DKGRAY
+        color = HudPalette.JOY_BG
         style = Paint.Style.FILL
-        alpha = 100
     }
-    
+
     private val knobPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.LTGRAY
+        color = HudPalette.JOY_KNOB
         style = Paint.Style.FILL
-        alpha = 200
     }
 
     private var knobX = 0f
@@ -208,9 +217,8 @@ class TouchJoystickView(context: Context, node: ControlNode) : BaseTouchControl(
 
 class TouchButtonView(context: Context, node: ControlNode) : BaseTouchControl(context, node) {
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.DKGRAY
+        color = HudPalette.BUTTON_IDLE
         style = Paint.Style.FILL
-        alpha = 150
     }
     
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -236,14 +244,25 @@ class TouchButtonView(context: Context, node: ControlNode) : BaseTouchControl(co
             centerY + size / 2f
         )
         
-        bgPaint.color = if (isPressedState || isToggledOn) Color.LTGRAY else Color.DKGRAY
+        bgPaint.color = if (isPressedState || isToggledOn) HudPalette.BUTTON_PRESSED else HudPalette.BUTTON_IDLE
         
         // Use a rounded square instead of a circle
         val cornerRadius = size * 0.25f
         canvas.drawRoundRect(buttonRect, cornerRadius, cornerRadius, bgPaint)
         
-        // Draw label
+        // Draw label — scale text with button size, then shrink-to-fit so
+        // multi-character labels ("Dodge", "Strafe") don't run past the edge
+        // on small screens. Inner width is the button minus rounded-corner
+        // padding.
         if (node.label.isNotEmpty()) {
+            val maxWidth = size * 0.85f
+            var ts = size * 0.32f
+            textPaint.textSize = ts
+            val measured = textPaint.measureText(node.label)
+            if (measured > maxWidth) {
+                ts *= maxWidth / measured
+                textPaint.textSize = ts
+            }
             val metrics = textPaint.fontMetrics
             val baseline = centerY - (metrics.ascent + metrics.descent) / 2
             canvas.drawText(node.label, centerX, baseline, textPaint)

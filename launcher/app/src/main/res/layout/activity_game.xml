@@ -27,8 +27,10 @@
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_edit_layout"
-            style="@style/Widget.Material3.Button.TonalButton"
+            style="@style/Widget.Material3.Button.UnelevatedButton"
             app:cornerRadius="12dp"
+            app:backgroundTint="#202020"
+            android:textColor="#FFFFFF"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginEnd="8dp"
@@ -38,8 +40,10 @@
         <!-- Exit is handled by Android Back (-> exit-confirm dialog). -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btn_keyboard"
-            style="@style/Widget.Material3.Button.TonalButton"
+            style="@style/Widget.Material3.Button.UnelevatedButton"
             app:cornerRadius="12dp"
+            app:backgroundTint="#202020"
+            android:textColor="#FFFFFF"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:alpha="0.55"
